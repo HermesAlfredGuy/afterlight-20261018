@@ -96,3 +96,34 @@ so the comparison stays honest and playable instead of being prose.
 Static ES-module site (vendored three.js r186 + Cormorant Garamond OFL, no build step),
 GitHub Pages under `HermesAlfredGuy/afterlight-20261018`, ZIP + screenshots + gameplay MP4 to
 the lab topic.
+
+## Revision log — what the critique actually changed
+
+Every entry is a criticism of a *rendered* frame (headless Chromium at 1440×900, real capture),
+not of the source. Each was followed by a change and a re-inspection.
+
+1. *"The sea is a flat woven grid / corduroy."* → replaced mesh displacement with an analytic
+   `microNormal` in the fragment shader, damped by distance.
+2. *"The water is wet coal."* → root cause: a hand-written `ShaderMaterial` does not get
+   three's output sRGB encode. Added a local `encode()` to both the sea and sky shaders.
+3. *"The whole frame is a washed-out haze."* → bloom 0.62→0.32, exposure 1.06→0.92, sun disc
+   softened, `.leak` alpha halved, fog/haze density ×0.34.
+4. *"Which ring am I supposed to fly through? They all glow."* → gate hierarchy: the next ring
+   is lit cream, passed rings fade to slate, future rings stay quiet; chevrons only stream on
+   the active ring.
+5. *"The beacon is not a landmark, it is a pole."* → rebuilt with a tapered needle, a central
+   spire, a stone platform, an emissive halo and a counter-rotating outer ring; platform
+   radius 40.
+6. *"The craft is a red arrow, not an aircraft."* → rim-lit leading *and* trailing wing edges,
+   thicker wings, a cream wingtip fin, larger sail panels, coral trail narrowed to 0.8.
+7. *"The aqueduct is a black mass that crushes the frame."* → span 340→300, deck 30→17 deep,
+   piers slimmer, dusk emissive fill on the stone, hemi light 0.72→0.86.
+8. *"The gate is swallowed by the dark arch."* → veil opacity up, band tube 0.34→0.5,
+   active-ring emissive 0.45→0.6; verified the lit ring is now the most salient object.
+9. *"The craft is tiny / the camera is too far."* → measured, not guessed: `craftBox()` reports
+   the craft's world span against the camera distance and FOV, so framing is a number
+   (~50 % of frame width at cruise) rather than an impression.
+10. *"The phone HUD is cluttered, the SQUALL label is duplicated, the buttons are too high."*
+    → gauge label hidden on touch (`body.is-touch`), touch buttons moved to the lower-right
+    thumb zone and slimmed, and a real `hasTouch` context now verifies the stick steers.
+
