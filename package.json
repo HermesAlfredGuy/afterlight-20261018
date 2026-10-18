@@ -1,0 +1,8 @@
+{
+  "name": "afterlight-20261018",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AFTERLIGHT — a playable 3D glider game over a floating archipelago at dusk.",
+  "license": "MIT"
+}

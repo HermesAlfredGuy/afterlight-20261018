@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="theme-color" content="#122b3a" />
+<title>AFTERLIGHT — a glider's evening over the emerald shelf</title>
+<meta name="description" content="AFTERLIGHT: fly a small cream glider through a sculptural floating archipelago above an emerald sea at dusk. Thread the rings, ride the thermals, dock at the Halo Beacon." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%23e2704a' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23ffe6bd'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="./styles.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="view" aria-label="Afterlight flight view"></canvas>
+
+<!-- atmospheric overlays: zero render cost, all mood -->
+<div class="vignette" aria-hidden="true"></div>
+<div class="leak" aria-hidden="true"></div>
+<div id="flash" class="flash" aria-hidden="true"></div>
+
+<div id="hud" class="hud" hidden>
+  <div class="hud-tl">
+    <div class="objective" id="objective">Thread the rings</div>
+    <div class="objective-sub" id="objective-sub">In order. Diving buys speed — spend it to climb.</div>
+  </div>
+  <div class="hud-tr">
+    <div class="stat"><span id="stat-time">0:00.0</span><em>time</em></div>
+    <div class="stat"><span id="stat-speed">0</span><em>m/s</em></div>
+    <div class="stat"><span id="stat-alt">0</span><em>alt</em></div>
+  </div>
+  <div class="hud-bl">
+    <div class="chain" id="chain"></div>
+    <div class="squall"><span>SQUALL</span><i><b id="squall-fill"></b></i></div>
+  </div>
+  <div class="hud-br">
+    <div class="score" id="score">0</div>
+    <div class="score-label">score</div>
+  </div>
+  <div class="chev" id="chev" hidden><span id="chev-mark">▲</span><span id="chev-dist"></span></div>
+  <div class="lock" id="lock" hidden><span class="lock-ring" id="lock-ring"></span><span class="lock-dist" id="lock-dist"></span></div>
+  <div class="toast" id="toast"></div>
+  <div class="hud-buttons">
+    <button id="btn-pause" title="Pause (P)">❙❙</button>
+    <button id="btn-sound" title="Sound (M)">♪</button>
+    <button id="btn-calm" title="Calm camera — reduced motion">≈</button>
+  </div>
+  <div class="look-badge" id="look-badge"></div>
+</div>
+
+<div id="touch" class="touch" hidden>
+  <div class="stick-zone" id="stick-zone"></div>
+  <div class="stick" id="stick"><span class="knob" id="stick-knob"></span></div>
+  <div class="touch-right">
+    <button id="btn-brake" class="tbtn">BRAKE</button>
+    <button id="btn-squall" class="tbtn primary">SQUALL</button>
+  </div>
+</div>
+
+<div id="menu" class="screen">
+  <div class="card">
+    <h1>AFTERLIGHT</h1>
+    <p class="tagline">A glider's evening over the emerald shelf.<br />One small craft, fourteen rings, and a beacon waiting on the far island.</p>
+    <div class="rule"></div>
+    <div class="starters">
+      <button id="btn-start" class="big primary" data-testid="start">Start Flight</button>
+      <button id="btn-free" class="big ghost">Free Flight</button>
+    </div>
+    <div class="menu-cols">
+      <div class="col">
+        <h2>Settings</h2>
+        <div class="row" id="look-row">
+          <span class="lab">Look</span>
+          <button class="chip" data-look="vesper">Emerald Vesper</button>
+          <button class="chip" data-look="ember">Ember Tide</button>
+          <button class="chip" data-look="ink">Ink Meridian</button>
+        </div>
+        <div class="row" id="quality-row">
+          <span class="lab">Detail</span>
+          <button class="chip" data-q="auto">Auto</button>
+          <button class="chip" data-q="high">High</button>
+          <button class="chip" data-q="low">Light</button>
+        </div>
+        <div class="row">
+          <span class="lab">Sound</span>
+          <button class="chip toggle" id="chip-sound">On</button>
+          <span class="lab">Camera</span>
+          <button class="chip toggle" id="chip-calm">Living</button>
+        </div>
+      </div>
+      <div class="col">
+        <h2>The line</h2>
+        <ul class="legend" id="legend"></ul>
+        <h2>Controls</h2>
+        <p class="keys"><b>W / S</b> or <b>↑ ↓</b> pitch · <b>A / D</b> or <b>← →</b> bank<br />
+        <b>Shift</b> squall (spend the gust) · <b>Space</b> airbrake<br />
+        <b>P</b> pause · <b>R</b> restart · <b>M</b> sound<br />
+        On touch: drag the left half to bank and pitch, buttons on the right.</p>
+      </div>
+    </div>
+    <p class="foot">Sculpted islands, coral sails and emerald water are generated from code — no downloads, no tracking, no account. Best line and best time are stored on this device only.</p>
+  </div>
+</div>
+
+<div id="pause" class="screen" hidden>
+  <div class="card narrow">
+    <h2 class="display">Paused</h2>
+    <p class="tagline" id="pause-note">The sea keeps moving. Take your time.</p>
+    <div class="starters">
+      <button id="btn-resume" class="big primary">Resume</button>
+      <button id="btn-restart" class="big ghost">Restart run</button>
+      <button id="btn-menu" class="big ghost">Menu</button>
+    </div>
+    <p class="keys" id="perf-note"></p>
+  </div>
+</div>
+
+<div id="results" class="screen" hidden>
+  <div class="card">
+    <h2 class="display" id="results-title">Beacon reached</h2>
+    <p class="tagline" id="results-sub"></p>
+    <div class="grid" id="results-grid"></div>
+    <div class="medal" id="results-medal"></div>
+    <div class="starters">
+      <button id="btn-again" class="big primary">Fly again</button>
+      <button id="btn-results-menu" class="big ghost">Menu</button>
+    </div>
+  </div>
+</div>
+
+<div id="fatal" class="fatal" hidden><h2>Something went wrong</h2><pre id="fatal-msg"></pre></div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
