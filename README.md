@@ -25,6 +25,19 @@ python3 -m http.server 8099 --directory .
 # open http://127.0.0.1:8099/index.html
 ```
 
+## Verify
+
+```bash
+npm run serve      # in one shell
+npm run verify     # in another: boots the real build headlessly and asserts the promises
+```
+
+`tools/verify.mjs` checks deployed-vs-working-tree parity, boot, the full 14-ring course flown
+to the beacon, pause/resume, restart, real keyboard and touch steering, and the delivered
+clip's format. Known-and-accepted limitations (camera proximity under the aqueduct, the demo
+autopilot's bank angle, wing-tip framing in a hard bank) are printed as measured `NOTE` lines
+rather than failures.
+
 ## Layout
 
 - `index.html`, `styles.css` — shell, HUD, screens, typography.

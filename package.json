@@ -4,5 +4,9 @@
   "private": true,
   "type": "module",
   "description": "AFTERLIGHT — a playable 3D glider game over a floating archipelago at dusk.",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "serve": "python3 -m http.server 8099 --bind 127.0.0.1",
+    "verify": "node tools/verify.mjs"
+  }
 }
