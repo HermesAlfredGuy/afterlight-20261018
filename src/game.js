@@ -651,7 +651,9 @@ export class Game {
     const desiredGamma = clamp(Math.atan2(dy, Math.max(40, dist)), -0.42, 0.34);
     const pitch = clamp((desiredGamma - this.craft.gamma) * 2.4, -1, 1);
     // bank right decreases heading, so steer against the heading error.
-    // The demo autopilot is deliberately gentle — a 60° bank makes the craft unreadable on camera.
+    // Rate command with damping. NOTE: a bank-ANGLE controller was tried and abandoned —
+    // at a 0.6-0.85 rad cap the demo could not hold the tight ring approaches (1/14 rings,
+    // 38 terrain clips); the course needs the authority this form has.
     const roll = clamp(-err * 1.6 - this.craft.bank * 0.8, -0.6, 0.6);
     let squall = false;
     if (this.craft.speed < 40 && this.craft.squall > 0.1 && dy > -30) squall = true;
