@@ -46,6 +46,8 @@ const api = {
   setManual: (on) => { game.manual = !!on; game.lastT = 0; },
   frame: (dt) => game.frame(dt || 1 / 30),
   craftBox: () => game.craftBox(),
+  whatsInFront: (g) => game.whatsInFront(g),
+  camDiag: () => game.camDiag(),
   sim: (dt = 1 / 30, n = 1) => { for (let i = 0; i < n; i++) game.step(dt); },
   setAuto: (on) => { game.auto = !!on; },
   key: (name, down) => { game.keys[name] = !!down; },

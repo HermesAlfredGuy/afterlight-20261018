@@ -39,7 +39,7 @@ class Skimmer {
     this.visual.rotation.order = 'YXZ';
     this.model = c.group;                  // nose points -Z
     this.model.rotation.y = Math.PI;       // face +Z (flight forward)
-    this.model.scale.setScalar(1.25);     // measured: ~25 m span, about half the frame width at cruise
+    this.model.scale.setScalar(1.1);      // measured: ~21 m span, ~40% of the frame width at cruise
     this.visual.add(this.model);
     this.ribbon = c.ribbon;
     this.reset();
@@ -650,8 +650,9 @@ export class Game {
     while (err < -Math.PI) err += Math.PI * 2;
     const desiredGamma = clamp(Math.atan2(dy, Math.max(40, dist)), -0.42, 0.34);
     const pitch = clamp((desiredGamma - this.craft.gamma) * 2.4, -1, 1);
-    // bank right decreases heading, so steer against the heading error
-    const roll = clamp(-err * 1.75 - this.craft.bank * 0.55, -1, 1);
+    // bank right decreases heading, so steer against the heading error.
+    // The demo autopilot is deliberately gentle — a 60° bank makes the craft unreadable on camera.
+    const roll = clamp(-err * 1.6 - this.craft.bank * 0.8, -0.6, 0.6);
     let squall = false;
     if (this.craft.speed < 40 && this.craft.squall > 0.1 && dy > -30) squall = true;
     if (dy > 60 && this.craft.speed < 52) squall = true;
@@ -811,8 +812,10 @@ export class Game {
     }
     desiredYaw = craft.heading + (calm ? 0 : craft.bank * 0.16);
     desiredPitch = craft.gamma * 0.42;
-    dist = 12.6 + speedK * (calm ? 0.9 : 3.4);
-    up = 2.5 + speedK * 1.0;
+    // The camera must sit outside the wing span (~12 m half-span), or the near wing
+    // sweeps through the lens and the craft reads as a cropped slab.
+    dist = 17 + speedK * (calm ? 1.0 : 3.6);
+    up = 1.5 + speedK * 0.8;
     const dir = new THREE.Vector3(
       Math.sin(desiredYaw) * Math.cos(desiredPitch),
       Math.sin(desiredPitch),
@@ -823,7 +826,34 @@ export class Game {
     desired.y = Math.max(desired.y, 8.5);
     const k = 7.2;
     this.camPos.lerp(desired, 1 - Math.exp(-k * dt));
-    const lookTarget = new THREE.Vector3().copy(craft.pos).addScaledVector(dir, 19).setY(craft.pos.y + 3.1);
+    // Camera clearance: never let the chase camera sit inside a pier, arch or rock, or the
+    // frame goes black for a beat as it passes through — and never shove it so far sideways
+    // that it ends up inside the craft's own wing. Two passes settle both constraints.
+    const cols = this.world && this.world.colliders;
+    for (let pass = 0; pass < 2 && cols; pass++) {
+      for (const c of cols) {
+        const topY = c.topY ?? 1e9, baseY = c.baseY ?? -1e9;
+        if (this.camPos.y > topY + 2 || this.camPos.y < baseY) continue;
+        // Only small solids (piers, props) — pushing off a 150 m island would fling the
+        // camera across the map, which is worse than the occlusion it prevents.
+        if ((c.r || 0) > 30) continue;
+        const dx = this.camPos.x - c.x, dz = this.camPos.z - c.z;
+        const rr = (c.r || 0) + 14;   // clear of the pier's own bulk, not just its collider
+        const d = Math.hypot(dx, dz);
+        if (d < rr) {
+          const s = (rr + 0.4) / Math.max(d, 0.05);
+          this.camPos.x = c.x + dx * s;
+          this.camPos.z = c.z + dz * s;
+        }
+      }
+      const away = new THREE.Vector3().subVectors(this.camPos, craft.pos);
+      const dist2 = away.length();
+      if (dist2 < 22) {
+        away.setLength(22);
+        this.camPos.copy(craft.pos).add(away);
+      }
+    }
+    const lookTarget = new THREE.Vector3().copy(craft.pos).addScaledVector(dir, 19).setY(craft.pos.y + 0.6);
     this.camLook.lerp(lookTarget, 1 - Math.exp(-9 * dt));
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
@@ -837,12 +867,66 @@ export class Game {
   /* --------------------------------------------------------------- loop */
   /** Measured craft extents (m) and current camera distance — used to keep framing honest. */
   craftBox() {
-    const box = new THREE.Box3().setFromObject(this.craft.visual);
+    // the craft model only — the trail ribbon and the contact shadow would inflate the box
+    const target = this.craft.model || this.craft.visual;
+    this.craft.visual.updateMatrixWorld(true);   // fresh transforms; render has not run yet
+    const box = new THREE.Box3().setFromObject(target);
     const size = box.getSize(new THREE.Vector3());
+    // project the corners into NDC so framing is measurable: >1 or <-1 means the craft
+    // (or a wingtip) is outside the viewport, which is a real framing defect.
+    // The camera matrix is only refreshed during render, so refresh it here first.
+    this.camera.updateMatrixWorld(true);
+    let minX = 9, maxX = -9, minY = 9, maxY = -9;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < 8; i++) {
+      v.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
+      v.project(this.camera);
+      minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+      minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+    }
     return {
       w: +size.x.toFixed(2), h: +size.y.toFixed(2), d: +size.z.toFixed(2),
       camDist: +this.camera.position.distanceTo(this.craft.pos).toFixed(2),
       fov: +this.camera.fov.toFixed(1),
+      ndc: [+minX.toFixed(2), +maxX.toFixed(2), +minY.toFixed(2), +maxY.toFixed(2)],
+      fitsFrame: minX > -1 && maxX < 1 && minY > -1 && maxY < 1,
+      camPos: [+this.camera.position.x.toFixed(1), +this.camera.position.y.toFixed(1), +this.camera.position.z.toFixed(1)],
+      pos: [+this.craft.pos.x.toFixed(1), +this.craft.pos.y.toFixed(1), +this.craft.pos.z.toFixed(1)],
+      state: this.state,
+    };
+  }
+
+  /** Debug: what solid is in front of the camera? Used to diagnose occluded frames. */
+  whatsInFront(grid = 1) {
+    const rc = new THREE.Raycaster();
+    const base = new THREE.Vector3();
+    this.camera.getWorldDirection(base);
+    const out = [];
+    const offs = grid > 1 ? [-0.5, 0, 0.5] : [0];
+    for (const ox of offs) {
+      for (const oy of offs) {
+        const dir = base.clone();
+        dir.x += ox * 0.4; dir.y += oy * 0.4;
+        dir.normalize();
+        rc.set(this.camera.position, dir);
+        rc.far = 500;
+        const hits = rc.intersectObject(this.world.root, true);
+        out.push(hits.length ? { d: +hits[0].distance.toFixed(1), geo: hits[0].object.geometry && hits[0].object.geometry.type, color: hits[0].object.material && hits[0].object.material.color ? '#' + hits[0].object.material.color.getHexString() : '' } : null);
+      }
+    }
+    return out;
+  }
+
+  /** Debug: is the camera matrix sane? A NaN here renders the whole world black. */
+  camDiag() {
+    const e = this.camera.matrixWorld.elements;
+    return {
+      pos: [+this.camera.position.x.toFixed(2), +this.camera.position.y.toFixed(2), +this.camera.position.z.toFixed(2)],
+      nan: e.some((v) => !Number.isFinite(v)) || !Number.isFinite(this.camera.position.x),
+      quat: [+this.camera.quaternion.x.toFixed(3), +this.camera.quaternion.y.toFixed(3), +this.camera.quaternion.z.toFixed(3), +this.camera.quaternion.w.toFixed(3)],
+      exposure: this.renderer ? this.renderer.toneMappingExposure : null,
+      sceneChildren: this.scene.children.length,
+      rootChildren: this.world.root.children.length,
     };
   }
 

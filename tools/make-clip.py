@@ -3,7 +3,7 @@ import os
 import subprocess
 
 ROOT = '/opt/data/projects/afterlight-20261018'
-FRAMES = os.path.join(ROOT, 'build/clip2/frames')
+FRAMES = os.path.join(ROOT, 'build/clip7/frames')
 names = sorted(n for n in os.listdir(FRAMES) if n.endswith('.jpg'))
 print('frames', len(names), names[0], names[-1])
 # contiguous run check
@@ -19,7 +19,7 @@ with open(listing, 'w') as f:
 out = os.path.join(ROOT, 'build/afterlight-gameplay.mp4')
 cmd = [
     'ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-r', '30', '-i', listing,
-    '-vf', 'scale=960:540:flags=lanczos,format=yuv420p',
+    '-vf', 'scale=1280:720:flags=lanczos,format=yuv420p',
     '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-movflags', '+faststart',
     '-an', out,
 ]
