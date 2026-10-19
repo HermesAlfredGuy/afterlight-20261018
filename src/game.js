@@ -6,11 +6,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { World, COURSE } from './world.js';
-import { makeCraft } from './procgen.js';
+import { makeCraft, CRAFT_RIG, CRAFT_RIM, makeNoise2D } from './procgen.js';
 import { getLook, LOOK_ORDER } from './looks.js';
+import { hazeColor, BANDS as AERIAL_BANDS } from './atmosphere.js';
 
 const clamp = THREE.MathUtils.clamp;
 const lerp = THREE.MathUtils.lerp;
+const damp = THREE.MathUtils.damp;
 const HK = 'afterlight.v1';
 
 /* --------------------------------------------------------------- flight */
@@ -42,6 +44,16 @@ class Skimmer {
     this.model.scale.setScalar(1.1);      // measured: ~21 m span, ~40% of the frame width at cruise
     this.visual.add(this.model);
     this.ribbon = c.ribbon;
+    this.lamp = c.lamp || null;            // nose lamp material: dimmed while the title is up
+    this.rim = c.rim || null;              // shared rim uniforms, for probe A/B on pixels
+    this.rig = c.rig;                      // elevons / rudder / wing flex / ribbon writer
+    this.noise = makeNoise2D(20261019);    // the gust field: seeded, simulation-time driven
+    this.ribRows = CRAFT_RIG.ribbonRows;
+    this.ribSegs = CRAFT_RIG.ribbonSegs;
+    this.ribSegA = new Float32Array(this.ribSegs + 1);
+    this.ribSegB = new Float32Array(this.ribSegs + 1);
+    this.ribXs = new Float32Array(this.ribRows);
+    this.ribZs = new Float32Array(this.ribRows);
     this.reset();
   }
   reset() {
@@ -58,6 +70,42 @@ class Skimmer {
     this.extraRoll = 0;
     this.thermalId = -1;
     this.thermalT = 0;
+    this.ridgeLift = 0;
+
+    /* ---- pass 2 animation state. Everything below is integrated inside the same fixed
+       1/120 s substep as the flight model, so the pose is a function of simulation time
+       only — never of the frame rate and never of the wall clock. ---------------- */
+    this.t = 0;                     // simulation clock for this craft
+    this.pitchVis = -this.gamma;    // damped visual pitch (spring follow + nose lead)
+    this.yawVis = this.heading;     // turn-coordinated visual yaw
+    this.posePitch = -this.gamma;
+    this.poseRoll = 0;
+    this.gammaRate = 0;
+    this.headingRate = 0;
+    this.rollRate = 0;
+    this.lastGamma = this.gamma;
+    this.lastHeading = this.heading;
+    this.lastBank = 0;
+    this.sway = 0; this.swayV = 0;          // gust roll sway (spring)
+    this.drift = 0; this.driftV = 0;        // gust lateral drift (spring)
+    this.kick = 0; this.kickV = 0;          // squall / skim body impulse (spring)
+    this.flare = 0;                         // ribbon + wing flare envelope
+    this.buffet = 0;                        // stall buffet envelope
+    this.flex = 0;                          // outer-panel bend angle
+    this.thermalFloat = 0;
+    this.bob = 0;
+    this.surfE = 0; this.surfD = 0; this.surfR = 0;
+    this.wasSqualling = false;
+    this.wasSkim = false;
+    this.ribSegA.fill(0); this.ribSegB.fill(0);
+    this.ribXs.fill(0); this.ribZs.fill(0);
+    this.gustA = 0; this.gustB = 0;
+    if (this.rig) {
+      this.rig.setElevons(0, 0);
+      this.rig.setRudder(0);
+      this.rig.setFlex(0, 0);
+      this.rig.ribbon.write(this.ribXs, this.ribZs, 1, 0);
+    }
   }
   forward(out = new THREE.Vector3()) {
     return out.set(Math.sin(this.heading) * Math.cos(this.gamma), Math.sin(this.gamma), Math.cos(this.heading) * Math.cos(this.gamma));
@@ -72,6 +120,7 @@ class Skimmer {
     let clipped = false, skimmed = false, squalling = false;
     for (let i = 0; i < steps; i++) {
       const r = this._integrate(h, input, world);
+      this._animate(h, input, r);
       clipped = clipped || r.clipped;
       skimmed = skimmed || r.skimmed;
       squalling = squalling || r.squalling;
@@ -136,6 +185,7 @@ class Skimmer {
         ridge = Math.max(ridge, FLIGHT.ridgeLift * clamp(1 - above / 70, 0, 1) * clamp(1 - (d - c.r) / (c.r * 1.1), 0, 1));
       }
     }
+    this.ridgeLift = ridge;   // the animator reads this for the nose-lift / ribbon response
     this.vy = this.speed * Math.sin(this.gamma) - FLIGHT.sinkBase * (1 - Math.min(0.85, ridge * 0.16 + lift * 0.07))
       + ridge + lift - this.stall * 6;
 
@@ -176,16 +226,142 @@ class Skimmer {
     return { clipped, skimmed, squalling };
   }
 
-  /** Pose the visible craft: bank roll, pitch, gust jitter, ribbon length. */
-  _pose(dt, world) {
-    this.visual.position.copy(this.pos);
-    this.visual.rotation.y = this.heading;
-    this.visual.rotation.x = -this.gamma;
+  /**
+   * One animation substep. Called from inside the same fixed 1/120 s loop as `_integrate`,
+   * so a 30 Hz frame and a 144 Hz frame produce the same pose for the same simulation time
+   * (the probe `tools/animprobe.mjs` prints the measured delta). No wall clock is read here.
+   */
+  _animate(h, input, r) {
+    this.t += h;
+
+    // --- rates of the flight vector: needed by the pitch lead and the turn coordination
+    let dh = this.heading - this.lastHeading;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    const kap = 1 - Math.exp(-20 * h);
+    this.gammaRate += ((this.gamma - this.lastGamma) / h - this.gammaRate) * kap;
+    this.headingRate += (dh / h - this.headingRate) * kap;
+    this.rollRate += ((this.bank - this.lastBank) / h - this.rollRate) * kap;
+    this.lastGamma = this.gamma;
+    this.lastHeading = this.heading;
+    this.lastBank = this.bank;
+
+    const speedK = clamp((this.speed - 42) / 70, 0, 1);          // 0 near the stall, 1 at vMax
     const liveliness = clamp((this.speed - 40) / 70, 0, 1);
-    this.visualRoll = THREE.MathUtils.damp(this.visualRoll, -this.bank * (0.95 + liveliness * 0.25), 8, dt);
-    this.visual.rotation.z = this.visualRoll;
-    this.model.position.y = Math.sin(performance.now() * 0.0022) * 0.12 * (1 - liveliness * 0.5);
-    if (this.ribbon) this.ribbon.scale.y = clamp(this.speed / 54, 0.5, 2.2);
+    const stallK = clamp(this.stall / 0.22, 0, 1);               // 0..1 across the usable stall band
+    this.thermalFloat = damp(this.thermalFloat, this.thermalId >= 0 ? 1 : 0, 1.3, h);
+
+    // --- 1. damped pitch: the nose trails the flight path with a small lead term
+    const lead = clamp(-this.gammaRate * 0.055, -0.05, 0.05);
+    this.pitchVis = damp(this.pitchVis, -this.gamma + lead, 7.2, h);
+
+    // --- 2. turn coordination: 2-5 deg of yaw into the turn, from yaw rate and roll rate,
+    //        so the craft points into the turn instead of sliding through it sideways.
+    const slip = clamp(this.headingRate * 0.085, -0.085, 0.085) + clamp(-this.rollRate * 0.010, -0.016, 0.016);
+    let dy = this.heading + slip - this.yawVis;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    this.yawVis += dy * (1 - Math.exp(-9 * h));
+
+    // --- 3. control surfaces answer the stick (player input or the demo autopilot)
+    const pitchCmd = clamp(input.pitch, -1, 1);
+    const rollCmd = clamp(input.roll, -1, 1);
+    // trailing edge down = nose up; right panel (side +1) up = roll right
+    this.surfE = damp(this.surfE, pitchCmd * CRAFT_RIG.maxElevon, 15, h);
+    this.surfD = damp(this.surfD, -rollCmd * CRAFT_RIG.maxAileron, 15, h);
+    // the rudder answers the roll input and, with a lead, the yaw rate already in the turn
+    const rudderCmd = clamp(-rollCmd * 0.7 + clamp(this.headingRate * 0.55, -0.6, 0.6), -1, 1);
+    this.surfR = damp(this.surfR, rudderCmd * CRAFT_RIG.maxRudder, 12, h);
+    this.rig.setElevons(this.surfE, this.surfD);
+    this.rig.setRudder(this.surfR);
+
+    // --- 4. wing flex: two or three degrees of outer-panel bend under load, plus a little
+    //        more in the buffet and in a thermal. Felt more than seen; never a flap.
+    const load = Math.abs(this.bank) / FLIGHT.maxBank;
+    const flexTarget = CRAFT_RIG.maxFlex * clamp(0.22 + 0.78 * load + Math.abs(this.rollRate) * 0.075, 0, 1.4)
+      + stallK * 0.012 + this.thermalFloat * 0.010 + this.flare * 0.014;
+    this.flex = damp(this.flex, flexTarget, 6.5, h);
+    this.rig.setFlex(this.flex, 0);
+
+    // --- 5. the gust field: two seeded low-frequency channels. Gustiness rises with speed
+    //        and while a squall is being spent, and drops to nearly nothing in a thermal core.
+    const gA = this.noise(this.t * 0.17, 11.3) - 0.5;
+    const gB = this.noise(this.t * 0.11 + 5.7, 3.9) - 0.5;
+    this.gustA = gA; this.gustB = gB;
+    const gusty = (0.42 + 0.85 * this.squallActive + 0.33 * speedK) * (1 - 0.72 * this.thermalFloat);
+    const swayTarget = clamp(gA * 2 * 0.052 * gusty, -0.062, 0.062);
+    const driftTarget = clamp(gB * 2 * 0.34 * gusty, -0.42, 0.42);
+    [this.sway, this.swayV] = spring(this.sway, this.swayV, swayTarget, 1.6, 0.9, h);
+    [this.drift, this.driftV] = spring(this.drift, this.driftV, driftTarget, 1.15, 0.85, h);
+
+    // --- 6. squall body language and the sea-skim kick: one impulse per event, then a
+    //        damped spring brings the nose back (dip, one small overshoot, settle).
+    if (r.squalling && !this.wasSqualling) { this.kickV -= 0.47; this.flare = 1; }
+    this.wasSqualling = r.squalling;
+    if (r.skimmed && !this.wasSkim) {
+      this.kickV += 0.62;
+      this.flare = Math.max(this.flare, 0.65);
+      this.buffet = Math.max(this.buffet, 0.45);
+    }
+    this.wasSkim = r.skimmed;
+    [this.kick, this.kickV] = spring(this.kick, this.kickV, 0, 8.5, 0.45, h);
+    this.flare = Math.max(0, this.flare - h * 1.35);
+
+    // --- 7. stall buffet: high-frequency, small-amplitude shake that fades as the wing
+    //        re-attaches; scaled by how far past the stall the craft is.
+    this.buffet = damp(this.buffet, stallK, stallK > this.buffet ? 9 : 3.2, h);
+    const buffAmp = this.buffet * 0.021;                         // 1.2 deg at full buffet
+    const buffP = Math.sin(this.t * 27.0) * buffAmp;
+    const buffR = Math.sin(this.t * 33.5 + 1.7) * buffAmp * 0.85;
+
+    // --- 8. thermal float: a slow lift and a settle of the sway; ridge lift lifts the nose
+    const floatBob = Math.sin(this.t * 0.62) * 0.17 * this.thermalFloat;
+    this.bob = damp(this.bob, floatBob + this.ridgeLift * 0.012, 2.4, h);
+    const ridgePitch = clamp(this.ridgeLift * 0.012, 0, 0.05);
+
+    // --- compose the pose the renderer will use
+    this.pitchVis = clamp(this.pitchVis, -1.2, 1.2);
+    this.visualRoll = damp(this.visualRoll, -this.bank * (0.95 + liveliness * 0.25), 8, h);
+    this.posePitch = this.pitchVis + this.kick * 0.9 + buffP - ridgePitch;
+    this.poseRoll = this.visualRoll + this.sway + buffR;
+
+    // --- 9. the trail ribbon: 13 links, each lagging the link ahead of it, driven by the
+    //        slip, the climb rate, the gust channels and the flare envelope.
+    //        Pass 2b: the forcing is SHAPED along the strip (+ at the root, - at the tip) so
+    //        the accumulating angle bows out and hooks back — a real S in a turn instead of
+    //        one long arc, which is what made it read as a tether rather than as air.
+    const curl = clamp(this.headingRate * 1.15, -1.4, 1.4);
+    const liftUp = clamp(-this.vy * 0.016, -0.3, 0.3) + this.thermalFloat * 0.5 + this.ridgeLift * 0.045;
+    const amp = 1 + this.flare * 0.9;
+    const segL = (CRAFT_RIG.ribbonLen / this.ribSegs) * 1.1;
+    let rx = 0, rz = 0;
+    this.ribXs[0] = 0; this.ribZs[0] = 0;
+    for (let k = 1; k <= this.ribSegs; k++) {
+      const t = k / this.ribSegs;
+      const shape = 1.6 - 2.9 * t;
+      const fA = (curl * 0.9 + gA * 1.15) * shape * amp * 0.62;
+      const fB = (liftUp * 0.55 + gB * 0.8) * shape * amp * 0.46;
+      this.ribSegA[k] = damp(this.ribSegA[k], this.ribSegA[k - 1] * 0.95 + fA, 16, h);
+      this.ribSegB[k] = damp(this.ribSegB[k], this.ribSegB[k - 1] * 0.95 + fB, 16, h);
+      rx += Math.sin(this.ribSegA[k]) * segL;
+      rz += Math.sin(this.ribSegB[k]) * segL;
+      this.ribXs[k] = rx;
+      this.ribZs[k] = rz;
+    }
+    this.rig.ribbon.write(this.ribXs, this.ribZs, 1, clamp(this.flare * 0.8 + Math.abs(gA) * 0.2, 0, 1));
+  }
+
+  /** Apply the composed pose to the visible craft. Runs once per rendered frame. */
+  _pose(dt, world) {
+    const liveliness = clamp((this.speed - 40) / 70, 0, 1);
+    this.visual.position.copy(this.pos);
+    if (this.drift) this.visual.position.addScaledVector(this.right(_tmp), this.drift);
+    this.visual.position.y += this.bob;
+    this.visual.rotation.y = this.yawVis;
+    this.visual.rotation.x = this.posePitch;
+    this.visual.rotation.z = this.poseRoll;
+    this.model.position.y = Math.sin(this.t * 1.9) * 0.06 * (1 - liveliness * 0.5);
+    if (this.ribbon) this.ribbon.scale.z = clamp(this.speed / 54, 0.5, 2.2);
 
     // Contact shadow on the swell: grounds the craft and sells altitude.
     const shadow = world && world.craftShadow;
@@ -197,6 +373,33 @@ class Skimmer {
       shadow.material.opacity = clamp(0.30 * (1 - alt / 300), 0, 0.30);
     }
   }
+
+  /** One-glance snapshot of the whole animation state — the frame-rate proof reads this. */
+  poseSnapshot() {
+    const xs = this.rig ? this.rig.ribbon : null;
+    return {
+      t: this.t,
+      rotX: this.visual.rotation.x, rotY: this.visual.rotation.y, rotZ: this.visual.rotation.z,
+      posX: this.visual.position.x, posY: this.visual.position.y, posZ: this.visual.position.z,
+      pitchVis: this.pitchVis, yawVis: this.yawVis, visualRoll: this.visualRoll,
+      elevonBoth: this.surfE, elevonDiff: this.surfD, rudder: this.surfR,
+      flex: this.flex, buffet: this.buffet, flare: this.flare,
+      kick: this.kick, sway: this.sway, drift: this.drift, bob: this.bob,
+      thermalFloat: this.thermalFloat,
+      ribbonTipX: this.ribXs[this.ribRows - 1], ribbonTipY: this.ribZs[this.ribRows - 1],
+      ribbonMidX: this.ribXs[Math.floor(this.ribRows / 2)],
+      ribbonVerts: xs ? Array.from(xs.geo.attributes.position.array.slice(0, 6)) : [],
+    };
+  }
+}
+const _tmp = new THREE.Vector3();
+
+/** Semi-implicit spring, integrated at the fixed substep: deterministic by construction. */
+function spring(x, v, target, omega, zeta, dt) {
+  const a = omega * omega * (target - x) - 2 * zeta * omega * v;
+  v += a * dt;
+  x += v * dt;
+  return [x, v];
 }
 
 /** Collision silhouette follows the visible landform, not a fat cylinder. */
@@ -405,9 +608,10 @@ export class Game {
     this.world = new World(look, this.qualityPref === 'low' ? 'low' : 'high');
     this.scene.add(this.world.root);
     this.craft = new Skimmer(look);
+    this.craftRim = this.craft.rim;        // probe handle: A/B the rim term on real pixels
     this.scene.add(this.craft.visual);
 
-    this.scene.fog = new THREE.FogExp2(new THREE.Color(look.fog.color).convertSRGBToLinear(), look.fog.density);
+    this.scene.fog = new THREE.FogExp2(hazeColor(look), look.fog.density);
 
     this.sun = new THREE.DirectionalLight(new THREE.Color(look.sun.color), look.sun.intensity);
     this.sun.castShadow = true;
@@ -451,9 +655,16 @@ export class Game {
 
     this.camPos = new THREE.Vector3().copy(this.craft.pos).add(new THREE.Vector3(0, 24, 90));
     this.camLook = new THREE.Vector3().copy(this.craft.pos);
+    this._camNd = new THREE.Vector3();      // scratch for the chase-camera framing feedback
+    this.camPush = 0;                       // how far the craft is outside the safe frame box
     this.gateIndex = 0;
     this.world.nextGate = this.world.gates[0];
     this.resetRun();
+    // menu hero pass: craft flying, camera composed, both driven by simulation time
+    this.menuT = 0;
+    this.menuCamSeed = true;
+    this.menuInput = { pitch: 0, roll: 0, squall: false, brake: false };
+    if (this.state === 'menu') this._seatMenuFlight();
   }
 
   /* ------------------------------------------------------------ run state */
@@ -502,7 +713,7 @@ export class Game {
     this.ui.showScreen(null);
   }
   restart() { this.startRun(this.mode); }
-  toMenu() { this.state = 'menu'; this.resetRun(); this.ui.showScreen('menu'); this.ui.setMode(this.mode); }
+  toMenu() { this.state = 'menu'; this.resetRun(); this._seatMenuFlight(); this.ui.showScreen('menu'); this.ui.setMode(this.mode); }
 
   finish(reason = 'beacon') {
     if (this.finished) return;
@@ -667,6 +878,9 @@ export class Game {
   step(dt) {
     const world = this.world;
     const input = this.readInput();
+    // The nose lamp is a flight aid, not a title graphic: on the menu it was the brightest
+    // thing in the frame, out-glowing the wordmark. It dims with the title up.
+    if (this.craft.lamp) this.craft.lamp.emissiveIntensity = this.state === 'menu' ? 0.32 : 1.25;
     if (this.auto) {
       const a = this.autopilot();
       this.autoInput = a;
@@ -707,10 +921,13 @@ export class Game {
       }
       this._checkGates();
       this._checkFinish();
+      this._updateGateAhead();
       world.update(dt, this.camera);
       const aim = this.gateIndex < world.gates.length ? world.gates[this.gateIndex].pos : world.beaconTarget;
       world.setGuide(this.craft.pos, aim);
     } else if (this.state === 'menu') {
+      this.menuT += dt;
+      this._flyMenu(dt, world);
       world.update(dt, this.camera);
     } else {
       // paused / results: the scenery keeps living, the craft holds its pose
@@ -719,6 +936,91 @@ export class Game {
     this._updateLightsAndSky(dt);
     this._updateCamera(dt);
     this.audio.wind(this.craft.speed, this.craft.thermalId >= 0 ? 1 : 0);
+  }
+
+  /**
+   * The menu's hero pass. In pass 1 the menu showed a frozen craft while the camera orbited
+   * the island; now the craft actually flies — a slow weave with a shallow altitude hold —
+   * so the title frame shows the machine working: bank, flex, ribbon and gusts all live.
+   */
+  _flyMenu(dt, world) {
+    const c = this.craft;
+    // Menu display pass only — the in-game autopilot is untouched (see _autopilot below).
+    // Altitude: gamma is itself the integral of the stick, so the inner loop closes on gamma
+    // with the sink rate fed forward, and the outer loop on altitude. Critically damped.
+    const err = 206 - c.pos.y;
+    const gammaCmd = clamp(0.035 + err * 0.010 - c.vy * 0.030, -0.16, 0.16);
+    this.menuInput.pitch = clamp((gammaCmd - c.gamma) * 5.0, -0.7, 0.7);
+    // Heading: a slow S-weave around the seated course. The bank follows the heading error
+    // through a proportional loop, so the roll channel keeps returning to level between turns
+    // (a held stick would just saturate the bank against its clamp).
+    const hdgTarget = this.menuHeading + 0.34 * Math.sin(this.menuT * 0.16);
+    const hErr = Math.atan2(Math.sin(hdgTarget - c.heading), Math.cos(hdgTarget - c.heading));
+    const bErr = clamp(hErr * 1.8, -0.42, 0.42) - c.bank;
+    this.menuInput.roll = clamp(bErr * 2.6, -0.8, 0.8);
+    const res = c.update(dt, this.menuInput, world);
+    if (res.skimmed) world.spawnSplash(c.pos, 22, 1.0);
+    // keep the pass in open air: if it drifts low, re-seat it under the scrim
+    if (c.pos.y < 120 || this.menuT > 600) this._seatMenuFlight();
+  }
+
+  /**
+   * Seat the menu pass. Composed from measurements (tools/menuseats probe): seated 600 m short
+   * of the finish beacon on bearing 0.95 rad, which puts the craft in the right third
+   * (NDC x -0.09..0.50), the beacon + finish island in frame at NDC x 0.46 and the sun 84 deg
+   * off the nose — a raking side light, so the craft reads lit instead of as a silhouette the
+   * way it did when it flew straight into the sun.
+   */
+  _seatMenuFlight() {
+    const c = this.craft;
+    c.reset();
+    c.pos.set(-208, 214, -1109);
+    c.heading = 0.95;
+    c.gamma = 0.035;
+    c.speed = 58;
+    this.menuHeading = 0.95;
+    c.pitchVis = -c.gamma;
+    c.yawVis = c.heading;
+    c.lastGamma = c.gamma;
+    c.lastHeading = c.heading;
+    c.posePitch = c.pitchVis;
+    this.menuT = 0;
+    this.menuCamSeed = true;
+    this.menuInput.pitch = 0;
+    this.menuInput.roll = 0;
+  }
+
+  /** Seat the title hero pass somewhere specific (composing the title frame from measurements). */
+  seatMenuAt(x, y, z, heading) {
+    this._seatMenuFlight();
+    const c = this.craft;
+    c.pos.set(x, y, z);
+    c.heading = heading;
+    this.menuHeading = heading;
+    c.yawVis = heading;
+    c.lastHeading = heading;
+    return { pos: [x, y, z], heading };
+  }
+
+  /**
+   * Plan-ahead lighting. While the craft is closing on the objective from its near side, the
+   * ring AFTER it is lit too, so the line out of the arch is readable before you are in it
+   * (at the aqueduct the exit ring used to be invisible until the next ring became objective).
+   */
+  _updateGateAhead() {
+    const world = this.world;
+    const g = world.nextGate;
+    const nx = world.gates[this.gateIndex + 1] || null;
+    let ahead = null;
+    if (g && nx) {
+      const dx = this.craft.pos.x - g.pos.x;
+      const dy = this.craft.pos.y - g.pos.y;
+      const dz = this.craft.pos.z - g.pos.z;
+      const side = dx * g.normal.x + dy * g.normal.y + dz * g.normal.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (side < 0 && d2 < 240 * 240) ahead = nx;
+    }
+    world.setGateAhead(ahead);
   }
 
   _checkGates() {
@@ -801,14 +1103,39 @@ export class Game {
     const calm = this.calm;
     let desiredYaw, desiredPitch, dist, up;
     if (this.state === 'menu') {
-      const a = performance.now() * 0.00004 + 0.9;
-      const r = 620;
-      const camPos = new THREE.Vector3(Math.cos(a) * r, 205 + Math.sin(a * 1.7) * 26, Math.sin(a) * r);
-      this.camPos.lerp(camPos, 1 - Math.exp(-1.2 * dt));
-      this.camLook.lerp(new THREE.Vector3(0, 96, 0), 1 - Math.exp(-1.2 * dt));
+      // A composed title frame instead of a blurred dialog: the camera rides the craft's
+      // shoulder on a slow hero pass and aims PAST it, so the craft sits in the right third
+      // and the left third stays clean for the title. Everything is driven by this.menuT
+      // (simulation time), never the wall clock, so captures are reproducible.
+      const c = this.craft;
+      const mt = this.menuT;
+      const yaw = c.heading + Math.PI + 0.52 + 0.14 * Math.sin(mt * 0.055);
+      let dist = 30 + 3.5 * Math.sin(mt * 0.041);
+      // Fit the whole span to the frame on any aspect: at the landscape distance a portrait
+      // phone (much narrower horizontal field) cropped both wingtips off the title frame.
+      {
+        const el = this.renderer.domElement;
+        const aspect = (el.clientWidth || 16) / Math.max(1, el.clientHeight || 9);
+        const hTan = Math.tan((this.touch ? 68 : 54) * Math.PI / 360) * aspect;
+        dist = Math.max(dist, 12.5 / Math.max(0.06, hTan * 0.42));
+      }
+      const up = -4.5 + 2.2 * Math.sin(mt * 0.073 + 1.1);
+      const dir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const camPos = new THREE.Vector3().copy(c.pos).addScaledVector(dir, dist);
+      camPos.y = c.pos.y + up;
+      if (this.menuCamSeed) { this.camPos.copy(camPos); }
+      this.camPos.lerp(camPos, 1 - Math.exp(-3.0 * dt));
+      const lookAhead = new THREE.Vector3().copy(c.pos).addScaledVector(c.forward(), 34);
+      const rightV = c.right();
+      const lateral = this.touch ? -7 : -18;
+      lookAhead.x += rightV.x * lateral;
+      lookAhead.z += rightV.z * lateral;
+      lookAhead.y += this.touch ? -30 : 3.0;
+      if (this.menuCamSeed) { this.camLook.copy(lookAhead); this.menuCamSeed = false; }
+      this.camLook.lerp(lookAhead, 1 - Math.exp(-2.4 * dt));
       this.camera.position.copy(this.camPos);
       this.camera.lookAt(this.camLook);
-      this.camera.fov = this.touch ? 62 : 56;
+      this.camera.fov = this.touch ? 68 : 54;
       this.camera.updateProjectionMatrix();
       return;
     }
@@ -817,6 +1144,20 @@ export class Game {
     // The camera must sit outside the wing span (~12 m half-span), or the near wing
     // sweeps through the lens and the craft reads as a cropped slab.
     dist = 17 + speedK * (calm ? 1.0 : 3.6);
+    // ...and far enough that the whole span fits the frame on ANY aspect. A portrait phone
+    // has a much narrower horizontal field than the 16:9 desktop case, and at the desktop
+    // distance the wingtips were being cropped off both edges of the screen.
+    {
+      const el = this.renderer.domElement;
+      const aspect = (el.clientWidth || 16) / Math.max(1, el.clientHeight || 9);
+      const hTan = Math.tan((this.touch ? 68 : 62) * Math.PI / 360) * aspect;
+      dist = Math.max(dist, 12.5 / Math.max(0.08, hTan * 0.62));
+    }
+    // Keep the subject inside the frame. In a hard diving turn the smoothed chase yaw lags the
+    // craft and it slid off the edge (measured on the pass-2 clip at the stall recovery: only a
+    // wingtip was left in frame). The camera cannot see the future, so this is a one-frame
+    // feedback: last frame's screen error, eased, pushes this frame's distance out.
+    dist *= 1 + this.camPush * 2.4;
     up = 1.5 + speedK * 0.8;
     const dir = new THREE.Vector3(
       Math.sin(desiredYaw) * Math.cos(desiredPitch),
@@ -864,6 +1205,11 @@ export class Game {
     const fovTarget = fovBase + (calm ? 0 : speedK * 12);
     this.camera.fov = lerp(this.camera.fov, fovTarget, 1 - Math.exp(-3.2 * dt));
     this.camera.updateProjectionMatrix();
+    // Measure how far outside the safe box the craft ended up; next frame's distance pays for it.
+    this.camera.updateMatrixWorld(true);
+    const ndc = this._camNd.copy(craft.pos).project(this.camera);
+    const over = Math.max(Math.abs(ndc.x) - 0.45, Math.abs(ndc.y) - 0.45, 0);
+    this.camPush = lerp(this.camPush, Math.min(over, 1.2), 1 - Math.exp(-6 * dt));
   }
 
   /* --------------------------------------------------------------- loop */
@@ -917,6 +1263,145 @@ export class Game {
       }
     }
     return out;
+  }
+
+  /**
+   * Occlusion probe: is the craft's own silhouette drawn over by world geometry? Rays are cast
+   * from the camera to eight points of the craft's bounding box; a world hit closer than the
+   * craft means that part of the craft is hidden. This is how "the craft is lost behind the
+   * pier" was measured, and how the fix at the arch was verified.
+   */
+  craftOcclusion() {
+    const rc = new THREE.Raycaster();
+    this.craft.model.updateMatrixWorld(true);
+    if (!this._craftBox) this._craftBox = new THREE.Box3();
+    this._craftBox.setFromObject(this.craft.model);
+    const pts = [];
+    for (let i = 0; i < 8; i++) {
+      pts.push(new THREE.Vector3(
+        i & 1 ? this._craftBox.max.x : this._craftBox.min.x,
+        i & 2 ? this._craftBox.max.y : this._craftBox.min.y,
+        i & 4 ? this._craftBox.max.z : this._craftBox.min.z
+      ));
+    }
+    pts.push(this._craftBox.getCenter(new THREE.Vector3()));
+    const hidden = [];
+    for (const p of pts) {
+      const dir = new THREE.Vector3().subVectors(p, this.camera.position);
+      const dist = dir.length();
+      if (dist < 1) continue;
+      dir.multiplyScalar(1 / dist);
+      rc.set(this.camera.position, dir);
+      rc.far = dist - 1.5;
+      rc.near = 0.5;
+      const hits = rc.intersectObject(this.world.root, true);
+      if (hits.length) {
+        hidden.push({
+          part: p.toArray().map((v) => +v.toFixed(1)),
+          by: hits[0].object.geometry ? hits[0].object.geometry.type : '?',
+          at: +hits[0].distance.toFixed(1),
+          craftDist: +dist.toFixed(1),
+        });
+      }
+    }
+    return { hidden: hidden.length, total: pts.length, detail: hidden };
+  }
+
+  /** Where is the next ring on screen, how far away, and is anything in front of its rim? */
+  gateView() {
+    const g = this.world.nextGate || this.world.gates[0];
+    if (!g) return null;
+    const rc = new THREE.Raycaster();
+    this.camera.updateMatrixWorld(true);
+    const centreP = g.pos.clone().project(this.camera);
+    const toPx = (v) => [Math.round((v.x * 0.5 + 0.5) * window.innerWidth), Math.round((0.5 - v.y * 0.5) * window.innerHeight)];
+    const inFrame = Math.abs(centreP.x) < 1 && Math.abs(centreP.y) < 1 && centreP.z < 1;
+    // in-plane basis of the ring, from its own normal (the ring stands upright)
+    const n = g.normal;
+    const side = new THREE.Vector3(n.z, 0, -n.x).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    let blocked = 0, samples = 0;
+    const blockedBy = [];
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const world = g.pos.clone()
+        .addScaledVector(side, Math.cos(a) * g.radius)
+        .addScaledVector(up, Math.sin(a) * g.radius);
+      const dir = new THREE.Vector3().subVectors(world, this.camera.position);
+      const dist = dir.length();
+      if (!Number.isFinite(dist) || dist < 2) continue;
+      samples++;
+      dir.multiplyScalar(1 / dist);
+      rc.set(this.camera.position, dir);
+      rc.near = 0.5;
+      rc.far = dist - 1.0;
+      // solid geometry only: the ring's own glow veil and additive chevrons are not occluders
+      const hits = rc.intersectObject(this.world.root, true)
+        .filter((h) => !this._inGroup(h.object, g.group))
+        .filter((h) => {
+          const m = h.object.material;
+          if (!m) return false;
+          if (m.transparent) return false;
+          return m.blending === undefined || m.blending === THREE.NormalBlending;
+        });
+      if (hits.length) {
+        blocked++;
+        if (blockedBy.length < 4) {
+          blockedBy.push({
+            geo: hits[0].object.geometry?.type,
+            at: +hits[0].distance.toFixed(1),
+            ringDist: +dist.toFixed(1),
+            color: hits[0].object.material?.color ? '#' + hits[0].object.material.color.getHexString() : '?',
+          });
+        }
+      }
+    }
+    return {
+      index: g.index, note: g.note,
+      dist: +g.pos.distanceTo(this.craft.pos).toFixed(1),
+      px: toPx(centreP), ndc: [+centreP.x.toFixed(3), +centreP.y.toFixed(3)],
+      inFrame, rimBlocked: blocked, rimSamples: samples, blockedBy,
+    };
+  }
+  _inGroup(obj, group) {
+    let o = obj;
+    while (o) { if (o === group) return true; o = o.parent; }
+    return false;
+  }
+
+  /**
+   * Debug/evidence: switch the aerial grading off and on again at runtime. Used by
+   * tools/aerialprobe.mjs to A/B the grading on real rendered pixels (same pose, same frame,
+   * only the haze path differs) instead of asserting that the shader "looks fine".
+   */
+  setAerialAB(on) {
+    let n = 0;
+    this.world.root.traverse((o) => {
+      const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+      for (const m of mats) {
+        if (!m.userData || !m.userData.__aerialFn) continue;
+        m.onBeforeCompile = on ? m.userData.__aerialFn : () => {};
+        // three caches compiled programs by their cache key, so the key must change too or
+        // the "off" material quietly reuses the patched program and the A/B measures nothing.
+        m.customProgramCacheKey = on ? m.userData.__aerialKey : () => 'aerial-off';
+        m.needsUpdate = true;
+        n++;
+      }
+    });
+    return n;
+  }
+
+  /** The aerial band table actually compiled into the haze shaders (for the report). */
+  aerialInfo() {
+    const look = this.look;
+    const haze = hazeColor(look).clone().convertLinearToSRGB();
+    return {
+      bands: AERIAL_BANDS[look.id === 'ink' ? 'ink' : 'default'],
+      hazeSRGB: '#' + haze.getHexString(),
+      fogDensity: look.fog.density,
+      materials: this.world ? this.world.aerialMaterials : 0,
+      seaShader: true,
+    };
   }
 
   /** Debug: is the camera matrix sane? A NaN here renders the whole world black. */

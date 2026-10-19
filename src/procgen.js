@@ -580,16 +580,122 @@ export function makeContactShadow(color = '#08222b') {
   mesh.frustumCulled = false;
   return mesh;
 }
-/** "Skimmer" — cream gull-wing glider, coral sail panels, dark keel. */
+/** Painted number, mirrored for the port panel so both sides read. */
+function sailNumberTexture(text, mirror = false) {
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, s, s);
+  if (mirror) { ctx.translate(s, 0); ctx.scale(-1, 1); }
+  ctx.fillStyle = 'rgba(74,52,38,0.88)';
+  ctx.font = '600 84px "Cormorant Garamond", Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, s / 2, s * 0.54);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** Airframe dimensions shared by the rig, the animator and the probes. */
+export const CRAFT_RIG = {
+  elevonSpan: 4.7,
+  elevonChord: 1.5,     // pass 2b: 1.05 read as sub-pixel at chase distance
+  elevonThick: 0.16,
+  flexPivotX: 4.2,      // wing-root line the outer panel flexes about
+  flexPivotY: 0.9,
+  ribbonRows: 14,
+  ribbonSegs: 13,
+  ribbonW: 0.74,
+  ribbonLen: 9.2,
+  // Pass 2b authority (deg -> rad). A 9 deg deflection on a 1.05 chord at 30 m sits under a
+  // pixel; 24/18/28 deg on a 1.5 chord with a dark body and a bright aft edge does not.
+  maxElevon: 0.419,     // 24 deg, both-together pitch deflection
+  maxAileron: 0.314,    // 18 deg, differential roll deflection
+  maxRudder: 0.489,     // 28 deg
+  maxFlex: 0.095,       // 5.4 deg of outer-panel bend at full load (was 3 deg: read as rigid)
+};
+
+/**
+ * The craft's grazing-angle rim. One shared uniform pair so a probe (or the menu) can A/B
+ * the term on real pixels: it is the only thing that keeps the dark keel and the shaded
+ * undersides apart from dark rock at the lighthouse, where silhouette-by-value loses.
+ */
+export const CRAFT_RIM = { k: { value: 1 }, color: { value: new THREE.Color('#ffd2a0') }, power: { value: 2.6 } };
+
+/** Add the rim to a standard material: brightens fragments whose normal grazes the view ray. */
+function rimmed(mat, k) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimK = CRAFT_RIM.k;
+    shader.uniforms.uRimC = CRAFT_RIM.color;
+    shader.uniforms.uRimP = CRAFT_RIM.power;
+    shader.uniforms.uRimW = { value: k };
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uRimK;\nuniform float uRimW;\nuniform float uRimP;\nuniform vec3 uRimC;')
+      .replace('#include <opaque_fragment>', `{
+        float graze = 1.0 - clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);
+        outgoingLight += uRimC * (uRimK * uRimW * pow(graze, uRimP));
+      }
+      #include <opaque_fragment>`);
+  };
+  // Materials that share a program would share the injected constants, so key them apart.
+  mat.customProgramCacheKey = () => 'al-rim-' + k;
+  return mat;
+}
+
+/** Root-to-tip alpha ramp for the vapour ribbon (u is across, v runs root -> tip). */
+function taperTexture() {
+  const h = 128;
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = h;
+  const ctx = c.getContext('2d');
+  for (let y = 0; y < h; y++) {
+    // image top (y=0) is v=1, which is the strip's root at the tail
+    const t = 1 - y / (h - 1);
+    const a = Math.pow(1 - t, 0.85) * 0.92 + 0.08;
+    ctx.fillStyle = `rgb(${Math.round(a * 255)},${Math.round(a * 255)},${Math.round(a * 255)})`;
+    ctx.fillRect(0, y, 4, 1);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/**
+ * "Skimmer" — cream gull-wing glider, coral sail panels, dark keel.
+ *
+ * Pass 2 gives the airframe a real rig so the animation state machine has something to
+ * drive: hinged elevons at the wing trailing edges, a hinged rudder on the fin, outer
+ * wing panels that bend about the wing-root line, and a 13-segment trail ribbon whose
+ * vertices are rewritten every physics substep (a strip, not a plank).
+ *
+ * Returns `{ group, ribbon, tipGlow, rig }` where rig exposes the setters.
+ */
 export function makeCraft(look) {
   const g = new THREE.Group();
-  const sail = linMaterial(look.craft.sail, { roughness: 0.7, flatShading: true, side: THREE.DoubleSide });
-  // dusk sails catch light like lit paper: a faint self-glow keeps the wings readable against dark water
-  sail.emissive = new THREE.Color('#5a3d1d');
-  sail.emissiveIntensity = 0.7;
-  const accent = linMaterial(look.craft.accent, { roughness: 0.75, flatShading: true, side: THREE.DoubleSide });
-  const keel = linMaterial(look.craft.keel, { roughness: 0.55, metalness: 0.15, flatShading: true });
-  const boom = linMaterial(look.craft.boom, { roughness: 0.6, flatShading: true });
+  const rig = CRAFT_RIG;
+  const sail = rimmed(linMaterial(look.craft.sail, { roughness: 0.62, flatShading: true, side: THREE.DoubleSide }), 0.30);
+  // Dusk sails catch light like lit paper, but pass 1's flat 0.7 emissive wash erased every
+  // shading cue (top and bottom read the same). The lift is now small, so the key/rim and the
+  // hemispheric ground term are what separate the lit top from the shaded underside.
+  sail.emissive = new THREE.Color('#4a3116');
+  sail.emissiveIntensity = 0.24;
+  const accent = rimmed(linMaterial(look.craft.accent, { roughness: 0.72, flatShading: true, side: THREE.DoubleSide }), 0.26);
+  const keelCol = new THREE.Color(look.craft.keel).multiplyScalar(0.68);   // darker keel: silhouette, not sludge
+  const keel = rimmed(linMaterial(keelCol, { roughness: 0.48, metalness: 0.18, flatShading: true }), 0.62);
+  const boom = rimmed(linMaterial(look.craft.boom, { roughness: 0.6, flatShading: true }), 0.55);
+  // Control surfaces: a distinctly DARK body with a bright cream aft edge. The contrast between
+  // the two is what makes a deflection read at chase distance, where a same-tone flap on a
+  // same-tone wing is a 2 px shift nobody sees.
+  const srf = rimmed(linMaterial(new THREE.Color(look.craft.keel).multiplyScalar(0.42),
+    { roughness: 0.5, metalness: 0.1, flatShading: true, side: THREE.DoubleSide }), 0.45);
+  const srfEdge = linMaterial('#fff3d8', { roughness: 0.5, flatShading: true });
+  srfEdge.emissive = new THREE.Color('#ffcf9a');
+  srfEdge.emissiveIntensity = 0.55;
+  // The hinge line: a dark slot the surface swings across, so the gap itself is legible.
+  const gap = linMaterial(new THREE.Color('#150f10').multiplyScalar(1), { roughness: 0.9, flatShading: true });
 
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.85, 6.4, 8, 1), keel);
   body.rotation.x = Math.PI * 0.5;
@@ -617,17 +723,29 @@ export function makeCraft(look) {
   g.add(fin);
 
   // gull wings: inner dihedral panel + outer panel, both with coral sail cloth
+  const elevons = [];
+  const flex = [];
   for (const s of [-1, 1]) {
     const inner = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.5, 2.5), sail);
     inner.position.set(s * 2.5, 0.55, 0.2);
     inner.rotation.z = -s * 0.22;
     inner.castShadow = true;
     g.add(inner);
+
+    // --- outer panel: every piece is registered so the whole panel can bend rigidly
+    //     about the wing-root line (wing flex) without restarting the silhouette.
+    const parts = [];
+    const reg = (mesh) => {
+      parts.push({ mesh, x: mesh.position.x, y: mesh.position.y, rz: mesh.rotation.z });
+      return mesh;
+    };
+
     const outer = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.42, 1.9), sail);
     outer.position.set(s * 6.6, 1.35, 0.6);
     outer.rotation.z = -s * 0.16;
     outer.castShadow = true;
-    g.add(outer);
+    g.add(outer); reg(outer);
+
     // sunlit leading edge: the rim that keeps the small craft legible against dark water
     const edgeMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#fff3d8'), emissive: new THREE.Color('#ffcf9a'),
@@ -636,49 +754,196 @@ export function makeCraft(look) {
     const edge = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.11, 0.26), edgeMat);
     edge.position.set(s * 6.6, 1.42, -0.32);
     edge.rotation.z = -s * 0.16;
-    g.add(edge);
+    g.add(edge); reg(edge);
     // rear edge: the chase camera sees the trailing edge, so it carries the rim too
     const trail = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.13, 0.3), edgeMat);
     trail.position.set(s * 6.6, 1.3, 1.55);
     trail.rotation.z = -s * 0.16;
-    g.add(trail);
+    g.add(trail); reg(trail);
+
     const panel = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.14, 3.0), accent);
     panel.position.set(s * 8.6, 1.7, 1.1);
     panel.castShadow = true;
-    g.add(panel);
+    g.add(panel); reg(panel);
+
     const tip = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.5, 0.16), edgeMat);
     tip.position.set(s * 9.5, 2.3, 0.9);
-    g.add(tip);
+    g.add(tip); reg(tip);
+
     const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 3.2, 5, 1), boom);
     strut.position.set(s * 4.4, 0.9, 0.4);
     strut.rotation.z = -s * (Math.PI * 0.5 - 0.35);
-    g.add(strut);
+    g.add(strut); reg(strut);
+
+    // painted number on the sail: a readable material detail when the camera closes in
+    const num = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 1.5),
+      new THREE.MeshBasicMaterial({
+        map: sailNumberTexture('07', s > 0), transparent: true, depthWrite: false,
+        color: new THREE.Color('#ffffff'),
+      })
+    );
+    num.position.set(s * 7.2, 1.575, 0.55);
+    num.rotation.x = -Math.PI * 0.5;
+    num.rotation.z = -s * 0.16;
+    g.add(num); reg(num);
+
+    // --- elevon: hinged ON the wing's trailing edge, hanging aft, so its aft edge sweeps
+    //     up/down in the chase camera's view — the stick's answer, in silhouette. Pass 2b:
+    //     1.5 chord, 0.16 thick, dark body, bright aft strip, and a dark hinge slot behind it.
+    const pivot = new THREE.Group();
+    pivot.position.set(s * 6.6, 1.30, 1.70);
+    pivot.rotation.z = -s * 0.16;
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(rig.elevonSpan, rig.elevonThick, rig.elevonChord), srf);
+    flap.position.set(0, 0, rig.elevonChord * 0.5);
+    flap.castShadow = true;
+    pivot.add(flap);
+    const flapEdge = new THREE.Mesh(new THREE.BoxGeometry(rig.elevonSpan + 0.04, 0.2, 0.2), srfEdge);
+    flapEdge.position.set(0, 0, rig.elevonChord - 0.09);
+    pivot.add(flapEdge);
+    g.add(pivot); reg(pivot);
+    elevons.push({ side: s, pivot });
+
+    // The hinge slot: a dark bar sitting under the surface's leading edge. When the surface
+    // swings it opens a black gap that is visible from any angle — the deflection's own shadow.
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(rig.elevonSpan + 0.06, 0.22, 0.16), gap);
+    slot.position.set(s * 6.6, 1.255, 1.66);
+    slot.rotation.z = -s * 0.16;
+    g.add(slot); reg(slot);
+
+    // The wing-root pivot line: a dark seam plus a hinge barrel, so the outer panel reads as a
+    // separate, moving piece rather than part of one rigid plank.
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 2.9), gap);
+    seam.position.set(s * rig.flexPivotX, 0.88, 0.5);
+    seam.rotation.z = -s * 0.22;
+    g.add(seam);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 2.6, 6, 1), boom);
+    barrel.rotation.x = Math.PI * 0.5;
+    barrel.position.set(s * rig.flexPivotX, 0.95, 0.5);
+    g.add(barrel);
+
+    flex.push({ side: s, pivot: { x: s * rig.flexPivotX, y: rig.flexPivotY }, parts });
   }
+
+  // --- rudder: hinged on the fin's trailing edge, aft edge swings left/right. Pass 2b: a
+  //     deeper dark blade with a bright aft strip and a dark base slot, so 28 deg of travel
+  //     changes both the silhouette and the light.
+  const rudderPivot = new THREE.Group();
+  rudderPivot.position.set(0, 1.7, 8.02);
+  const rFlap = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.05, 1.35), srf);
+  rFlap.position.set(0, 0, 0.675);
+  rFlap.castShadow = true;
+  rudderPivot.add(rFlap);
+  const rAft = new THREE.Mesh(new THREE.BoxGeometry(0.17, 2.1, 0.2), srfEdge);
+  rAft.position.set(0, 0, 1.28);
+  rudderPivot.add(rAft);
+  g.add(rudderPivot);
+  const rSlot = new THREE.Mesh(new THREE.BoxGeometry(0.34, 2.2, 0.18), gap);
+  rSlot.position.set(0, 1.7, 7.94);
+  g.add(rSlot);
 
   const seat = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 1.8), keel);
   seat.position.set(0, 0.7, 1.6);
   g.add(seat);
 
-  // wind ribbon: a flat coral streamer that trails the craft (reads as speed, not a mast)
-  const ribbon = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.8, 8.5, 1, 8),
-    new THREE.MeshBasicMaterial({
-      color: new THREE.Color(look.craft.accent), transparent: true, opacity: 0.22,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    })
-  );
+  // Wind ribbon: a 13-segment strip that trails the craft. It used to be a flat plank; the
+  // animator writes one lateral and one vertical offset per row, so it curls and lags down its
+  // length and reads as moving air rather than a board bolted to the tail.
+  //
+  // Pass 2b: it used to be AdditiveBlending at 0.26 — which is why it read as a glowing UI
+  // tether instead of vapour. Now it is a normal-blended, root-to-tip tapered, unlit strip,
+  // and it is built as a CROSS of two strips sharing one geometry: a flat one reads edge-on
+  // to a chase camera in any bank, so the vertical partner is what makes it a volume.
+  const ribRows = rig.ribbonRows;
+  const ribLen = rig.ribbonLen;
+  const ribGeo = new THREE.PlaneGeometry(rig.ribbonW, ribLen, 2, rig.ribbonSegs);
+  const ribbonMat = new THREE.MeshBasicMaterial({
+    color: shade(look.craft.sail, 0.96), transparent: true, opacity: 0.5,
+    alphaMap: taperTexture(), depthWrite: false, side: THREE.DoubleSide,
+  });
+  const ribbon = new THREE.Group();
+  const ribFlat = new THREE.Mesh(ribGeo, ribbonMat);
+  ribFlat.rotation.x = -Math.PI * 0.5;
+  const ribUpright = new THREE.Mesh(ribGeo, ribbonMat);
+  // local x -> craft y (upright), local y -> craft -z (same root/tip direction as the flat
+  // strip), local z -> craft -x. Built as an explicit basis so the two strips cannot disagree.
+  ribUpright.quaternion.setFromRotationMatrix(
+    new THREE.Matrix4().set(0, 0, -1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 1));
+  ribbon.add(ribFlat, ribUpright);
   ribbon.position.set(0, 0.2, 9);
-  ribbon.rotation.x = -Math.PI * 0.5;
+  ribbon.frustumCulled = false;      // the tail swings outside the flat strip's bounds
   g.add(ribbon);
 
+  const ribbonRig = {
+    rows: ribRows,
+    cols: 3,
+    segLen: ribLen / rig.ribbonSegs,
+    halfW: rig.ribbonW * 0.5,
+    geo: ribGeo,
+    mat: ribbonMat,
+    /**
+     * xs/zs: per-row lateral (craft-x) and vertical (craft-y) offsets.
+     * widthK: taper along the strip. flare: 0..1 gust flare (wider + deeper fold).
+     */
+    write(xs, zs, widthK, flare) {
+      const arr = ribGeo.attributes.position.array;
+      const w = rig.ribbonW * 0.5 * widthK * (1 + flare * 0.85);
+      const fold = -0.05 * (1 + flare * 2.2);
+      for (let r = 0; r < ribRows; r++) {
+        const t = r / (ribRows - 1);
+        const wk = w * (1 - 0.42 * t);
+        for (let c = 0; c < 3; c++) {
+          const i = (r * 3 + c) * 3;
+          arr[i] = (c - 1) * wk + xs[r];
+          arr[i + 2] = zs[r] + (c === 1 ? fold : fold * 0.25);
+        }
+      }
+      ribGeo.attributes.position.needsUpdate = true;
+    },
+    dispose() { ribGeo.dispose(); ribbonMat.alphaMap?.dispose(); ribbonMat.dispose(); },
+  };
+
   const tipGlow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.42, 8, 6),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color('#fff4dc'), emissive: new THREE.Color('#ffd79a'), emissiveIntensity: 1.6 })
+    new THREE.SphereGeometry(0.32, 8, 6),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color('#fff4dc'), emissive: new THREE.Color('#ffd79a'), emissiveIntensity: 1.25 })
   );
   tipGlow.position.set(0, 0.4, -4.6);
   g.add(tipGlow);
 
-  return { group: g, ribbon, tipGlow };
+  return {
+    group: g,
+    ribbon,
+    tipGlow,
+    lamp: tipGlow.material,
+    rim: CRAFT_RIM,
+    rig: {
+      elevons,
+      rudder: rudderPivot,
+      flex,
+      ribbon: ribbonRig,
+      /** Aft edge lifts for positive input on both panels. */
+      setElevons(both, differential) {
+        for (const e of elevons) {
+          const a = both + differential * e.side;
+          e.pivot.rotation.x = THREE.MathUtils.clamp(a, -0.78, 0.78);
+        }
+      },
+      setRudder(a) { rudderPivot.rotation.y = THREE.MathUtils.clamp(a, -0.52, 0.52); },
+      /** phi >= 0 raises both tips; each outer panel rotates rigidly about its root line. */
+      setFlex(phi, rollDelta) {
+        for (const f of flex) {
+          const a = f.side * phi + f.side * rollDelta;
+          const c = Math.cos(a), sn = Math.sin(a);
+          for (const p of f.parts) {
+            const dx = p.x - f.pivot.x, dy = p.y - f.pivot.y;
+            p.mesh.position.x = f.pivot.x + dx * c - dy * sn;
+            p.mesh.position.y = f.pivot.y + dx * sn + dy * c;
+            p.mesh.rotation.z = p.rz + a;
+          }
+        }
+      },
+    },
+  };
 }
 
 /* ----------------------------------------------------------------- gates */

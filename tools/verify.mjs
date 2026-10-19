@@ -156,16 +156,43 @@ await tctx.close();
 check('no runtime errors after the full run', errs.length === 0, errs.slice(0, 2).join(' | '));
 await browser.close();
 
-// ---------------------------------------------------------------- delivered clip
-const mp4 = `${ROOT}/build/afterlight-gameplay.mp4`;
+// Pass-2 capture set: 6 poses x 2 viewports, real renders (a tiny PNG means a blank frame).
+const shotDir = `${ROOT}/docs/pass2`;
+const shotNames = ['menu', 'bank', 'stall', 'squall', 'arch', 'vista'];
+const missing = [];
+const small = [];
+for (const view of ['1440x900', '390x844']) {
+  for (const n of shotNames) {
+    const f = `${shotDir}/${view}/${n}.png`;
+    if (!fs.existsSync(f)) { missing.push(`${view}/${n}`); continue; }
+    if (fs.statSync(f).size < 20000) small.push(`${view}/${n}`);
+  }
+}
+check('pass-2 capture set present (6 poses x 2 viewports)',
+  missing.length === 0 && small.length === 0,
+  missing.length ? `missing ${missing.join(', ')}` : small.length ? `suspiciously small ${small.join(', ')}` : '12 real PNGs');
+
+// ---------------------------------------------------------------- delivered clips
+// Pass-2 deliverable: 1080p, 12-20 s, real frames captured from the live build.
+const mp4 = `${ROOT}/docs/pass2/afterlight-pass2-1080p.mp4`;
 if (fs.existsSync(mp4)) {
   const probe = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height,nb_frames',
     '-show_entries', 'format=duration', '-of', 'default=nw=1', mp4], { encoding: 'utf8' });
-  check('delivered MP4 is 1280x720 H.264, 16 s',
-    /codec_name=h264/.test(probe) && /width=1280/.test(probe) && /height=720/.test(probe) && /duration=16/.test(probe),
-    probe.trim().split('\n').join(' '));
+  const dur = Number((probe.match(/duration=([\d.]+)/) || [])[1] || 0);
+  check('pass-2 clip is 1080p H.264, 12-20 s',
+    /codec_name=h264/.test(probe) && /width=1920/.test(probe) && /height=1080/.test(probe) && dur >= 12 && dur <= 20,
+    `${probe.trim().split('\n').join(' ')} (duration ${dur}s)`);
 } else {
-  note('delivered MP4', 'not built in this tree (tools/make-clip.py needs a captured frame set)');
+  note('pass-2 clip', 'not built in this tree (node tools/clip2.mjs then ffmpeg, see the file header)');
+}
+// Pass-1 clip, kept for comparison.
+const mp4old = `${ROOT}/build/afterlight-gameplay.mp4`;
+if (fs.existsSync(mp4old)) {
+  const probe = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height,nb_frames',
+    '-show_entries', 'format=duration', '-of', 'default=nw=1', mp4old], { encoding: 'utf8' });
+  check('pass-1 MP4 still present (1280x720 H.264)',
+    /codec_name=h264/.test(probe) && /width=1280/.test(probe) && /height=720/.test(probe),
+    probe.trim().split('\n').join(' '));
 }
 
 console.log(`\n${fails === 0 ? 'ALL ASSERTIONS PASS' : fails + ' ASSERTION(S) FAILED'} — ${notes.length} measured limitation note(s)`);

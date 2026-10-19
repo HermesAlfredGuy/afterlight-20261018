@@ -1,4 +1,5 @@
 // AFTERLIGHT — bootstrap + a small scripted API used by automated capture/verification.
+import * as THREE from 'three';
 import { Game } from './game.js';
 import { UI } from './ui.js';
 import { COURSE } from './world.js';
@@ -100,6 +101,71 @@ const api = {
     for (let i = 0; i < frames; i++) game.frame(dt);
     const ms = (performance.now() - t0) / frames;
     return { msPerFrame: +ms.toFixed(2), fps: +(1000 / ms).toFixed(1) };
+  },
+
+  /* ---- pass-2 probes: animation state, occlusion, gate framing ------------------ */
+  /** The whole animation state in one object (frame-rate independence proof reads this). */
+  pose: () => game.craft.poseSnapshot(),
+  /** Deformable-ribbon proof: every vertex of the trail strip, in craft-local space. */
+  ribbon: () => {
+    const g = game.craft.rig.ribbon.geo;
+    return Array.from(g.attributes.position.array).map((v) => +v.toFixed(4));
+  },
+  /** Is the craft's own silhouette drawn over by world geometry? */
+  craftOcclusion: () => game.craftOcclusion(),
+  /** Where is the next ring on screen, how far, and what is in front of it? */
+  gateView: () => game.gateView(),
+  /** Menu state, deterministic: re-seat the hero pass and return its numbers. */
+  resetMenu: () => { game.state = 'menu'; game._seatMenuFlight(); return { menuT: game.menuT }; },
+  menuT: () => game.menuT,
+  /** Re-seat the title hero pass at an arbitrary point (used to compose the frame precisely). */
+  menuSeat: (x, y, z, heading) => game.seatMenuAt(x, y, z, heading),
+  /** What changed in the aerial grading: the band table the shaders are using. */
+  aerial: () => game.aerialInfo(),
+  /** NDC of a world point in the current camera — used to compose the title frame precisely. */
+  ndcOf: (p) => {
+    game.camera.updateMatrixWorld(true);
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(game.camera);
+    return [+v.x.toFixed(3), +v.y.toFixed(3), +(v.z < 1 ? 1 : 0)];
+  },
+  /** Where the sun sits in the current frame (the sun sprite rides world.sunDir). */
+  sunNdc: () => {
+    const c = game.camera;
+    const p = game.craft.pos.clone().addScaledVector(game.world.sunDir, 9000);
+    return window.AFTERLIGHT.api.ndcOf([p.x, p.y, p.z]);
+  },
+  /** Evidence: switch the aerial grading off/on at runtime (A/B on real pixels). */
+  setAerial: (on) => game.setAerialAB(on),
+  /** Sample the rendered frame (the 3D pixels only, no DOM) over normalised rectangles.
+   *  Reads straight off the WebGL drawing buffer in the same task as the render, because
+   *  drawImage() from a presented canvas can hand back a stale composited frame. */
+  sample: (rects) => {
+    const gl = game.renderer.getContext();
+    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    const px = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const out = {};
+    for (const [name, r] of Object.entries(rects)) {
+      const x0 = Math.round(r[0] * W), yTop = Math.round(r[1] * H);
+      const w = Math.max(1, Math.round(r[2] * W)), h = Math.max(1, Math.round(r[3] * H));
+      const y0 = Math.max(0, H - (yTop + h));         // GL origin is bottom-left
+      let R = 0, G = 0, B = 0, n = 0;
+      for (let y = y0; y < Math.min(H, y0 + h); y++) {
+        for (let x = x0; x < Math.min(W, x0 + w); x++) {
+          const i = (y * W + x) * 4;
+          R += px[i]; G += px[i + 1]; B += px[i + 2]; n++;
+        }
+      }
+      R /= n; G /= n; B /= n;
+      const mx = Math.max(R, G, B) / 255, mn = Math.min(R, G, B) / 255;
+      out[name] = {
+        rgb: [+R.toFixed(1), +G.toFixed(1), +B.toFixed(1)],
+        hex: '#' + [R, G, B].map((v) => Math.round(v).toString(16).padStart(2, '0')).join(''),
+        lum: +(0.2126 * R + 0.7152 * G + 0.0722 * B).toFixed(1),
+        sat: +(mx > 0 ? ((mx - mn) / mx) * 100 : 0).toFixed(1),
+      };
+    }
+    return out;
   },
 };
 

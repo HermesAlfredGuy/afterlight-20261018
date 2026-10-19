@@ -18,6 +18,7 @@ export class UI {
       chain: $('chain'), squallFill: $('squall-fill'), score: $('score'),
       chev: $('chev'), chevMark: $('chev-mark'), chevDist: $('chev-dist'),
       lock: $('lock'), lockRing: $('lock-ring'), lockDist: $('lock-dist'),
+      reticle: $('reticle'), fpm: $('fpm'), fpmA: document.querySelector('#fpm .fpm-a'),
       toast: $('toast'), lookBadge: $('look-badge'), flash: $('flash'),
       menu: $('menu'), pause: $('pause'), results: $('results'),
       btnStart: $('btn-start'), btnFree: $('btn-free'), btnResume: $('btn-resume'),
@@ -168,6 +169,32 @@ export class UI {
       const ang = Math.atan2(py - window.innerHeight / 2, px - window.innerWidth / 2) * 180 / Math.PI + 90;
       this.el.chevMark.style.transform = `rotate(${ang}deg)`;
       this._set('chevDist', this.el.chevDist, `${dist} m`);
+    }
+
+    /* Flight-path marker: where the craft is ACTUALLY going, drawn separately from the fixed
+       centre reticle. In a steady glide the two coincide; a stall opens the gap (the craft
+       sinks below its nose) and a dive closes it. The stem draws the gap itself. */
+    if (game.state === 'flying') {
+      const c = game.craft;
+      const path = c.forward();                                 // velocity direction
+      const q = c.pos.clone().addScaledVector(path, 260).project(game.camera);
+      const onScreen = q.z < 1 && Math.abs(q.x) < 0.97 && Math.abs(q.y) < 0.97;
+      this.el.fpm.hidden = !onScreen;
+      if (onScreen) {
+        const px = (q.x * 0.5 + 0.5) * window.innerWidth;
+        const py = (0.5 - q.y * 0.5) * window.innerHeight;
+        const gap = py - window.innerHeight * 0.5;              // + = path below the reticle
+        this.el.fpm.style.transform = `translate(${Math.round(px)}px, ${Math.round(py)}px)`;
+        this.el.fpm.style.opacity = (0.92 - Math.min(0.35, Math.abs(q.x) * 0.2 + Math.abs(q.y) * 0.2)).toFixed(2);
+        const stem = this.el.fpmA;
+        if (stem) {
+          const h = Math.round(Math.min(150, Math.abs(gap)));
+          stem.style.height = `${h}px`;
+          stem.style.top = gap > 0 ? `${15 - h}px` : '15px';
+        }
+      }
+    } else {
+      this.el.fpm.hidden = true;
     }
   }
 

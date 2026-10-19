@@ -45,6 +45,8 @@
   </div>
   <div class="chev" id="chev" hidden><span id="chev-mark">▲</span><span id="chev-dist"></span></div>
   <div class="lock" id="lock" hidden><span class="lock-ring" id="lock-ring"></span><span class="lock-dist" id="lock-dist"></span></div>
+  <div class="reticle" id="reticle" aria-hidden="true"><i class="ret-core"></i></div>
+  <div class="fpm" id="fpm" hidden><i></i><span class="fpm-a"></span></div>
   <div class="toast" id="toast"></div>
   <div class="hud-buttons">
     <button id="btn-pause" title="Pause (P)">❙❙</button>
@@ -63,48 +65,53 @@
   </div>
 </div>
 
-<div id="menu" class="screen">
-  <div class="card">
-    <h1>AFTERLIGHT</h1>
-    <p class="tagline">A glider's evening over the emerald shelf.<br />One small craft, fourteen rings, and a beacon waiting on the far island.</p>
-    <div class="rule"></div>
-    <div class="starters">
-      <button id="btn-start" class="big primary" data-testid="start">Start Flight</button>
-      <button id="btn-free" class="big ghost">Free Flight</button>
-    </div>
-    <div class="menu-cols">
-      <div class="col">
-        <h2>Settings</h2>
-        <div class="row" id="look-row">
-          <span class="lab">Look</span>
-          <button class="chip" data-look="vesper">Emerald Vesper</button>
-          <button class="chip" data-look="ember">Ember Tide</button>
-          <button class="chip" data-look="ink">Ink Meridian</button>
+<div id="menu" class="screen menu">
+  <div class="menu-scrim" aria-hidden="true"></div>
+  <div class="menu-panel">
+    <header class="menu-head">
+      <p class="kicker">The emerald shelf · last light</p>
+      <h1>AFTERLIGHT</h1>
+      <p class="tagline">A glider's evening over the emerald shelf.<br />One small craft, fourteen rings, and a beacon waiting on the far island.</p>
+      <div class="starters">
+        <button id="btn-start" class="big primary" data-testid="start">Start Flight</button>
+        <button id="btn-free" class="big ghost">Free Flight</button>
+      </div>
+    </header>
+    <div class="menu-info">
+      <div class="menu-cols">
+        <div class="col">
+          <h2>Settings</h2>
+          <div class="row" id="look-row">
+            <span class="lab">Look</span>
+            <button class="chip" data-look="vesper">Emerald Vesper</button>
+            <button class="chip" data-look="ember">Ember Tide</button>
+            <button class="chip" data-look="ink">Ink Meridian</button>
+          </div>
+          <div class="row" id="quality-row">
+            <span class="lab">Detail</span>
+            <button class="chip" data-q="auto">Auto</button>
+            <button class="chip" data-q="high">High</button>
+            <button class="chip" data-q="low">Light</button>
+          </div>
+          <div class="row">
+            <span class="lab">Sound</span>
+            <button class="chip toggle" id="chip-sound">On</button>
+            <span class="lab">Camera</span>
+            <button class="chip toggle" id="chip-calm">Living</button>
+          </div>
         </div>
-        <div class="row" id="quality-row">
-          <span class="lab">Detail</span>
-          <button class="chip" data-q="auto">Auto</button>
-          <button class="chip" data-q="high">High</button>
-          <button class="chip" data-q="low">Light</button>
-        </div>
-        <div class="row">
-          <span class="lab">Sound</span>
-          <button class="chip toggle" id="chip-sound">On</button>
-          <span class="lab">Camera</span>
-          <button class="chip toggle" id="chip-calm">Living</button>
+        <div class="col">
+          <h2>The line</h2>
+          <ul class="legend" id="legend"></ul>
+          <h2>Controls</h2>
+          <p class="keys"><b>W / S</b> or <b>↑ ↓</b> pitch · <b>A / D</b> or <b>← →</b> bank<br />
+          <b>Shift</b> squall (spend the gust) · <b>Space</b> airbrake<br />
+          <b>P</b> pause · <b>R</b> restart · <b>M</b> sound<br />
+          On touch: drag the left half to bank and pitch, buttons on the right.</p>
         </div>
       </div>
-      <div class="col">
-        <h2>The line</h2>
-        <ul class="legend" id="legend"></ul>
-        <h2>Controls</h2>
-        <p class="keys"><b>W / S</b> or <b>↑ ↓</b> pitch · <b>A / D</b> or <b>← →</b> bank<br />
-        <b>Shift</b> squall (spend the gust) · <b>Space</b> airbrake<br />
-        <b>P</b> pause · <b>R</b> restart · <b>M</b> sound<br />
-        On touch: drag the left half to bank and pitch, buttons on the right.</p>
-      </div>
+      <p class="foot">Sculpted islands, coral sails and emerald water are generated from code — no downloads, no tracking, no account. Best line and best time are stored on this device only.</p>
     </div>
-    <p class="foot">Sculpted islands, coral sails and emerald water are generated from code — no downloads, no tracking, no account. Best line and best time are stored on this device only.</p>
   </div>
 </div>
 

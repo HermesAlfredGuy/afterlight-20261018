@@ -4,6 +4,7 @@
 // edges and hazards so the route is readable from altitude.
 import * as THREE from 'three';
 import * as P from './procgen.js';
+import { aerialGLSL, applyAerialTo, hazeColor, coolColor } from './atmosphere.js';
 
 export const COURSE = {
   start: { x: 0, y: 252, z: -150, heading: Math.PI },
@@ -34,7 +35,11 @@ export const LANDMARKS = {
   slabTemple: { x: -300, y: 172, z: -650, radius: 96 },
   islet: { x: -900, z: 430, radius: 145, height: 96 },
   finish: { x: 280, z: -760, radius: 170, height: 150 },
-  aqueduct: { x: -380, z: -170, yaw: Math.PI * 1.156, deckY: 128, span: 300 },
+  // The aqueduct centre is deliberately placed so its braced bay straddles gate 5 (the ring
+  // under the arch at -380/92/-170): 37.5 m to the nearest pier on either side, 63 m of clear
+  // span, ring fully below the deck. It used to be centred ON the gate, which buried the ring
+  // inside a 12 m pier and flew the craft through solid stone.
+  aqueduct: { x: -413.1, z: -152.3, yaw: Math.PI * 1.156, deckY: 128, span: 300 },
 };
 
 const SEA_SHADER = {
@@ -52,6 +57,10 @@ const SEA_SHADER = {
     uSunDir: { value: new THREE.Vector3(0, 0.2, 1) },
     uFogColor: { value: new THREE.Color('#c79f86') },
     uSeaHaze: { value: new THREE.Color('#8fb0a8') },
+    // aerial perspective: display-referred haze the far water dissolves into, and the cool
+    // direction its far bands lean toward (set per look in _applyLook)
+    uAerialHaze: { value: new THREE.Color('#9aa3ac') },
+    uAerialCool: { value: new THREE.Color('#4d6b96') },
     uFogDensity: { value: 0.00062 },
     uIslandPos: { value: new Array(8).fill(0).map(() => new THREE.Vector3(1e6, 0, 1e6)) },
     uIslandRad: { value: new Array(8).fill(1) },
@@ -106,6 +115,7 @@ const SEA_SHADER = {
     varying vec3 vWorld;
     varying vec3 vNrm;
     varying vec2 vShFoam;
+${aerialGLSL(null, { exterior: true })}
 
     // ShaderMaterial output must do its own encoding: three only converts
     // built-in materials, which is why the first pass looked like wet coal.
@@ -168,10 +178,11 @@ const SEA_SHADER = {
       col = mix(col, uFoam, clamp(shore * 1.15 + breakers, 0.0, 0.9));
 
       // Distance: the water keeps its own colour a long way out; only the far sea greys off.
+      // It greys off through the SAME aerial-perspective bands the land uses, so distant water
+      // and distant land dissolve into one colour instead of two different greys.
       float f = 1.0 - exp(-pow(dist * uFogDensity * 0.34, 1.7));
       if (uDebug > 6.5 && uDebug < 7.5) { gl_FragColor = vec4(vec3(f), 1.0); return; }
-      col = mix(col, uSeaHaze, clamp(f * 0.85, 0.0, 0.72));
-      gl_FragColor = vec4(encode(col), 1.0);
+      gl_FragColor = vec4(aerialPerspective(encode(col), dist, clamp(f, 0.0, 0.92)), 1.0);
     }`,
 };
 
@@ -179,6 +190,9 @@ const SEA_SHADER = {
 const RING_HOT = new THREE.Color('#fdf3e0');
 const RING_IDLE = new THREE.Color('#33454f');
 const RING_DONE = new THREE.Color('#4a5a62');
+// the ring after the next one: readable through the near arch and across the water, quiet
+// enough that it can never be mistaken for the objective
+const RING_AHEAD = new THREE.Color('#b9cbcd');
 
 const SKY_SHADER = {
   uniforms: {
@@ -236,6 +250,7 @@ export class World {
     this.root = new THREE.Group();
     this.colliders = [];
     this.gates = [];
+    this.gateAhead = null;
     this.sailShips = [];
     this.birds = [];
     this.thermals = [];
@@ -310,10 +325,15 @@ export class World {
     u.uSkyLow.value = new THREE.Color(look.sky.horizon).convertSRGBToLinear();
     u.uSkyHigh.value = new THREE.Color(look.sky.mid).convertSRGBToLinear();
     u.uSunDir.value.copy(this.sunDir);
-    u.uFogColor.value = new THREE.Color(look.fog.color).convertSRGBToLinear();
+    // Fog and aerial perspective must agree: the fog colour IS the haze colour, so the far
+    // land's dissolve and the bands that desaturate it end in the same place.
+    const hazeLin = hazeColor(look);
+    u.uFogColor.value.copy(hazeLin);
+    u.uAerialHaze.value.copy(hazeLin).convertLinearToSRGB();
+    u.uAerialCool.value.copy(coolColor(look));
     u.uSeaHaze.value = new THREE.Color(look.sea.mid).convertSRGBToLinear()
       .lerp(new THREE.Color(look.sky.mid).convertSRGBToLinear(), 0.45)
-      .lerp(new THREE.Color(look.fog.color).convertSRGBToLinear(), 0.12);
+      .lerp(hazeLin.clone(), 0.12);
     u.uFogDensity.value = look.fog.density;
     u.uDebug.value = Number(new URLSearchParams(location.search).get('dbg') || 0);
     for (let i = 0; i < 8; i++) {
@@ -330,7 +350,8 @@ export class World {
     const farGeo = new THREE.PlaneGeometry(16000, 16000, 1, 1);
     farGeo.rotateX(-Math.PI / 2);
     const farMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(look.sea.deep) });
-    farMat.color.lerp(new THREE.Color(look.sky.mid), 0.45).lerp(new THREE.Color(look.fog.color), 0.12);
+    farMat.color.lerp(new THREE.Color(look.sky.mid), 0.45)
+      .lerp(new THREE.Color(coolColor(look)), 0.18);
     this.farSea = new THREE.Mesh(farGeo, farMat);
     this.farSea.position.y = -3.0;
     this.farSea.frustumCulled = false;
@@ -612,6 +633,13 @@ export class World {
     /* contact shadow under the craft: grounds it over the swell */
     this.craftShadow = P.makeContactShadow();
     this.root.add(this.craftShadow);
+
+    /* aerial perspective: one function, applied to every fogged material in the world so the
+       depth bands are graded consistently. The craft, the gate glow, the clouds and the sky are
+       deliberately left out: they must keep their local contrast at any distance. */
+    this.aerialMaterials = applyAerialTo(this.root, look, {
+      bands: look.id === 'ink' ? 'ink' : 'default',
+    });
   }
 
   /** Draw the guide arc toward the current objective, and the shaft above it. */
@@ -662,6 +690,9 @@ export class World {
     g.glowMat.opacity = 0.5;
   }
 
+  /** Gate after the objective (lit while the player closes on the objective). */
+  setGateAhead(g) { this.gateAhead = g || null; }
+
   update(dt, camera) {
     this.time += dt;
     const t = this.time;
@@ -677,18 +708,20 @@ export class World {
       }
     }
 
-    // gate hierarchy: only the next ring is lit; past rings fade to slate, later rings stay quiet
+    // gate hierarchy: the next ring is lit; the ring after it is legible through the near
+    // arch so the player can plan the exit line; past rings fade to slate, later rings quiet
     for (const g of this.gates) {
       const near = g === this.nextGate;
+      const ahead = !near && g === this.gateAhead;
       const done = g.index < this.gateIndex;
       g.flash = Math.max(0, g.flash - dt * 1.6);
-      g.glowMat.opacity = (near ? 0.34 + 0.18 * Math.sin(t * 3.0) : 0) + g.flash * 0.4;
+      g.glowMat.opacity = (near ? 0.34 + 0.18 * Math.sin(t * 3.0) : ahead ? 0.11 : 0) + g.flash * 0.4;
       if (g.ringMat) {
-        g.ringMat.color.lerp(near ? RING_HOT : done ? RING_DONE : RING_IDLE, 1 - Math.exp(-5 * dt));
-        g.ringMat.emissiveIntensity = near ? 0.6 : 0.015;
+        g.ringMat.color.lerp(near ? RING_HOT : ahead ? RING_AHEAD : done ? RING_DONE : RING_IDLE, 1 - Math.exp(-5 * dt));
+        g.ringMat.emissiveIntensity = near ? 0.6 : ahead ? 0.20 : 0.015;
       }
       if (g.bandMat) {
-        g.bandMat.emissiveIntensity = (near ? 2.2 + 0.8 * Math.sin(t * 3.4) : done ? 0.03 : 0.05) + g.flash * 1.5;
+        g.bandMat.emissiveIntensity = (near ? 2.2 + 0.8 * Math.sin(t * 3.4) : ahead ? 0.55 : done ? 0.03 : 0.05) + g.flash * 1.5;
       }
       if (g.chevrons) {
         for (let i = 0; i < g.chevrons.length; i++) {
