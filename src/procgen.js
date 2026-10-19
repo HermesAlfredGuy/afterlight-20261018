@@ -607,14 +607,15 @@ export const CRAFT_RIG = {
   flexPivotY: 0.9,
   ribbonRows: 14,
   ribbonSegs: 13,
-  ribbonW: 0.74,
+  ribbonW: 0.92,
   ribbonLen: 9.2,
   // Pass 2b authority (deg -> rad). A 9 deg deflection on a 1.05 chord at 30 m sits under a
   // pixel; 24/18/28 deg on a 1.5 chord with a dark body and a bright aft edge does not.
   maxElevon: 0.419,     // 24 deg, both-together pitch deflection
   maxAileron: 0.314,    // 18 deg, differential roll deflection
   maxRudder: 0.489,     // 28 deg
-  maxFlex: 0.095,       // 5.4 deg of outer-panel bend at full load (was 3 deg: read as rigid)
+  maxFlex: 0.150,       // 8.6 deg of outer-panel bend at full load: a bend you can see at chase
+                        // distance; 3 deg read as rigid and 5.4 deg still needed a ruler
 };
 
 /**
@@ -686,11 +687,13 @@ export function makeCraft(look) {
   const keelCol = new THREE.Color(look.craft.keel).multiplyScalar(0.68);   // darker keel: silhouette, not sludge
   const keel = rimmed(linMaterial(keelCol, { roughness: 0.48, metalness: 0.18, flatShading: true }), 0.62);
   const boom = rimmed(linMaterial(look.craft.boom, { roughness: 0.6, flatShading: true }), 0.55);
-  // Control surfaces: a distinctly DARK body with a bright cream aft edge. The contrast between
-  // the two is what makes a deflection read at chase distance, where a same-tone flap on a
-  // same-tone wing is a 2 px shift nobody sees.
-  const srf = rimmed(linMaterial(new THREE.Color(look.craft.keel).multiplyScalar(0.42),
-    { roughness: 0.5, metalness: 0.1, flatShading: true, side: THREE.DoubleSide }), 0.45);
+  // Control surfaces: a coral body with a bright cream aft edge. The contrast between the two is
+  // what makes a deflection read at chase distance, where a same-tone flap on a same-tone wing
+  // is a 2 px shift nobody sees.
+  // Movable surfaces are coral, fixed structure is cream and keel: one glance tells you what the
+  // stick is moving. (A dark flap on a cream wing reads as shadow, not as a surface.)
+  const srf = rimmed(linMaterial(new THREE.Color(look.craft.accent).multiplyScalar(0.92),
+    { roughness: 0.62, metalness: 0.05, flatShading: true, side: THREE.DoubleSide }), 0.35);
   const srfEdge = linMaterial('#fff3d8', { roughness: 0.5, flatShading: true });
   srfEdge.emissive = new THREE.Color('#ffcf9a');
   srfEdge.emissiveIntensity = 0.55;
@@ -717,7 +720,7 @@ export function makeCraft(look) {
   tail.rotation.z = Math.PI * 0.5;
   tail.scale.set(1, 1, 0.28);
   g.add(tail);
-  const fin = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 2.6), accent);
+  const fin = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 2.6), sail);
   fin.position.set(0, 1.5, 7.6);
   fin.rotation.y = Math.PI * 0.5;
   g.add(fin);
@@ -746,6 +749,15 @@ export function makeCraft(look) {
     outer.castShadow = true;
     g.add(outer); reg(outer);
 
+    // Shoulder fairing: the gull wing steps up from the inner panel to the raised outer panel.
+    // Without this the step reads as two planks stacked at different heights; with it the break
+    // is a faceted joint, which is the low-poly language the rest of the craft uses.
+    const shoulder = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.44, 2.3), sail);
+    shoulder.position.set(s * 4.45, 0.95, 0.45);
+    shoulder.rotation.z = -s * 0.38;
+    shoulder.castShadow = true;
+    g.add(shoulder); reg(shoulder);
+
     // sunlit leading edge: the rim that keeps the small craft legible against dark water
     const edgeMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#fff3d8'), emissive: new THREE.Color('#ffcf9a'),
@@ -766,12 +778,12 @@ export function makeCraft(look) {
     panel.castShadow = true;
     g.add(panel); reg(panel);
 
-    const tip = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.5, 0.16), edgeMat);
-    tip.position.set(s * 9.5, 2.3, 0.9);
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.2, 0.16), edgeMat);
+    tip.position.set(s * 9.45, 2.15, 0.9);
     g.add(tip); reg(tip);
 
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 3.2, 5, 1), boom);
-    strut.position.set(s * 4.4, 0.9, 0.4);
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.9, 5, 1), boom);
+    strut.position.set(s * 4.5, 0.78, 0.4);
     strut.rotation.z = -s * (Math.PI * 0.5 - 0.35);
     g.add(strut); reg(strut);
 

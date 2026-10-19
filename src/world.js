@@ -525,7 +525,9 @@ export class World {
     const guideGeo = new THREE.BufferGeometry();
     guideGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(30 * 3), 3));
     this.guide = new THREE.Line(guideGeo, new THREE.LineBasicMaterial({
-      color: new THREE.Color('#ffd9a8'), transparent: true, opacity: 0, depthWrite: false,
+      // cool and faint on purpose: the warm cream vapour is the aircraft's own trail, so the
+      // guide must read as instrumentation and never as a second streamer behind the craft.
+      color: new THREE.Color('#bfe0ff'), transparent: true, opacity: 0, depthWrite: false,
       blending: THREE.AdditiveBlending, fog: true,
     }));
     this.guide.frustumCulled = false;
@@ -655,7 +657,7 @@ export class World {
     if (!this.guide) return;
     const arr = this.guide.geometry.attributes.position.array;
     const n = arr.length / 3;
-    this.guide.material.opacity = d > 90 ? Math.min(0.26, 0.05 + d / 2600) : 0;
+    this.guide.material.opacity = d > 90 ? Math.min(0.11, 0.02 + d / 6000) : 0;
     if (d <= 90) return;
     const sag = Math.min(90, d * 0.055);
     for (let i = 0; i < n; i++) {

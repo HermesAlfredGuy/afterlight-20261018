@@ -18,15 +18,18 @@ fs.mkdirSync(OUT, { recursive: true });
 // The sortie as a per-frame mark table. Ops: start | auto | brake | key | squall.
 const MARK = {
   0: [{ op: 'start' }],
-  150: [{ op: 'auto', v: false }],
-  152: [{ op: 'brake', v: true }],
-  268: [{ op: 'brake', v: false }, { op: 'key', k: 'pitchDown', v: true }],
-  296: [{ op: 'key', k: 'pitchDown', v: false }],
-  318: [{ op: 'auto', v: true }],
-  330: [{ op: 'key', k: 'squall', v: true }],
-  337: [{ op: 'key', k: 'squall', v: false }],
-  378: [{ op: 'key', k: 'squall', v: true }],
-  385: [{ op: 'key', k: 'squall', v: false }],
+  // The squall has to be spent while the input actually reaches the craft: in manual mode the key
+  // is the input, under the autopilot the autopilot owns it (measured: manual flare 0.96 and
+  // +25 m/s, autopilot flare 0.00). The stall is also staged higher than the route's own descent:
+  // flown at 7 m over sunlit water the craft washes out and the stall beat stops reading, which is
+  // exactly the frame a viewer judges the animation by.
+  55: [{ op: 'auto', v: false }],
+  57: [{ op: 'key', k: 'squall', v: true }],
+  70: [{ op: 'key', k: 'squall', v: false }],
+  145: [{ op: 'brake', v: true }],
+  255: [{ op: 'brake', v: false }, { op: 'key', k: 'pitchUp', v: true }],
+  295: [{ op: 'key', k: 'pitchUp', v: false }],
+  305: [{ op: 'auto', v: true }],
 };
 
 const browser = await chromium.launch({
@@ -46,7 +49,7 @@ for (let f = 0; f < TOTAL; f++) {
   line = await page.evaluate(({ due }) => {
     const a = window.AFTERLIGHT.api;
     for (const m of due) {
-      if (m.op === 'start') { a.setManual(true); a.start('trial'); a.seek(2, 150, 62); a.setAuto(true); }
+      if (m.op === 'start') { a.setManual(true); a.start('trial'); a.seek(8, 110, 58); a.setAuto(true); }
       else if (m.op === 'auto') a.setAuto(m.v);
       else if (m.op === 'brake') a.brake(m.v);
       else if (m.op === 'key') a.key(m.k, m.v);

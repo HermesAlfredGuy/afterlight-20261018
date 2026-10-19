@@ -92,6 +92,7 @@ class Skimmer {
     this.flare = 0;                         // ribbon + wing flare envelope
     this.buffet = 0;                        // stall buffet envelope
     this.flex = 0;                          // outer-panel bend angle
+    this.flexShown = 0;                     // bend + sail flutter, what the rig actually draws
     this.thermalFloat = 0;
     this.bob = 0;
     this.surfE = 0; this.surfD = 0; this.surfR = 0;
@@ -281,7 +282,15 @@ class Skimmer {
     const flexTarget = CRAFT_RIG.maxFlex * clamp(0.22 + 0.78 * load + Math.abs(this.rollRate) * 0.075, 0, 1.4)
       + stallK * 0.012 + this.thermalFloat * 0.010 + this.flare * 0.014;
     this.flex = damp(this.flex, flexTarget, 6.5, h);
-    this.rig.setFlex(this.flex, 0);
+    // Sail flutter: the cloth works in the airflow, so the outer panels shimmer at a frequency
+    // set by airspeed, deeper in a gust or a buffet. Small (about 0.6-1.6 deg) but continuous —
+    // that is what separates "a model being rotated" from "a wing being flown". Symmetric with
+    // the turn's load so a hard bank visibly bends the wing up rather than just tilting it.
+    const flutterAmp = 0.010 + 0.016 * clamp(this.speed / 70, 0, 1)
+      + this.buffet * 0.016 + Math.abs(this.gustA) * 0.012;
+    const flutter = Math.sin(this.t * 17.5 + this.noise(this.t * 0.8, 4.2) * 5) * flutterAmp;
+    this.flexShown = this.flex + flutter;
+    this.rig.setFlex(this.flexShown, clamp(this.rollRate * 0.055, -0.05, 0.05));
 
     // --- 5. the gust field: two seeded low-frequency channels. Gustiness rises with speed
     //        and while a squall is being spent, and drops to nearly nothing in a thermal core.
@@ -383,7 +392,7 @@ class Skimmer {
       posX: this.visual.position.x, posY: this.visual.position.y, posZ: this.visual.position.z,
       pitchVis: this.pitchVis, yawVis: this.yawVis, visualRoll: this.visualRoll,
       elevonBoth: this.surfE, elevonDiff: this.surfD, rudder: this.surfR,
-      flex: this.flex, buffet: this.buffet, flare: this.flare,
+      flex: this.flex, flexShown: this.flexShown, buffet: this.buffet, flare: this.flare,
       kick: this.kick, sway: this.sway, drift: this.drift, bob: this.bob,
       thermalFloat: this.thermalFloat,
       ribbonTipX: this.ribXs[this.ribRows - 1], ribbonTipY: this.ribZs[this.ribRows - 1],
