@@ -685,7 +685,12 @@ export function makeCraft(look) {
   sail.emissiveIntensity = 0.24;
   const accent = rimmed(linMaterial(look.craft.accent, { roughness: 0.72, flatShading: true, side: THREE.DoubleSide }), 0.26);
   const keelCol = new THREE.Color(look.craft.keel).multiplyScalar(0.68);   // darker keel: silhouette, not sludge
-  const keel = rimmed(linMaterial(keelCol, { roughness: 0.48, metalness: 0.18, flatShading: true }), 0.62);
+  // Cool the keel a touch: the reef course ribbon and some terrain bands are the same warm
+  // burgundy as the keel, and red-on-red collapsed the craft's root into the background in the
+  // bank capture (review: "the root becomes muddled"). Shifting the darkest panels toward slate
+  // keeps the palette but buys a value AND hue break against warm terrain.
+  keelCol.lerp(new THREE.Color('#26303f'), 0.30);
+  const keel = rimmed(linMaterial(keelCol, { roughness: 0.48, metalness: 0.18, flatShading: true }), 0.72);
   const boom = rimmed(linMaterial(look.craft.boom, { roughness: 0.6, flatShading: true }), 0.55);
   // Control surfaces: a coral body with a bright cream aft edge. The contrast between the two is
   // what makes a deflection read at chase distance, where a same-tone flap on a same-tone wing
@@ -882,6 +887,10 @@ export function makeCraft(look) {
   ribUpright.quaternion.setFromRotationMatrix(
     new THREE.Matrix4().set(0, 0, -1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 1));
   ribbon.add(ribFlat, ribUpright);
+  // Head anchor: the strip's rows grow aft from this origin, and 9.0 is flush with the airframe's
+  // aft-most geometry (the model spans ~15 m fore-aft, tail at +9.4 m in this frame). The "detached
+  // shard" seen in review is the FLAT strip caught edge-on at chase height, not a positional gap,
+  // so the anchor stays where the geometry proves it belongs instead of being nudged blind.
   ribbon.position.set(0, 0.2, 9);
   ribbon.frustumCulled = false;      // the tail swings outside the flat strip's bounds
   g.add(ribbon);

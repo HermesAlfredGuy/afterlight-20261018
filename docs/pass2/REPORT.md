@@ -80,3 +80,31 @@ authority are untouched. Everything below is measured from the real build in hea
   artefacts, not errors.
 - Software GL on a 2-core host: per-frame cost and frame rate are not representative of a real GPU.
   No physical-device test was run.
+
+## Review round 2 (art-director pass on the delivered stills)
+
+Two signalled defects were checked against the build rather than accepted on the reviewer's word:
+
+1. *"the craft's burgundy root merges with the burgundy reef"* — the base colours were measured in
+   Lab: keel `#271d1d` against the nearest reef band `#5a2a33` is dE 21.9 (L* 14 vs 24), and against
+   the terrain side dE 58.7. The merge is therefore not a base-colour problem; the keel was still
+   cooled 30% toward `#26303f` (dE 23.3, and a hue break rather than only a value break) and its rim
+   term raised 0.62 -> 0.72. A second, contradictory review of the same frame shows this signal is
+   noisy: treat the measurement, not the impression.
+2. *"the route line still reads as a glowing tether"* — accepted. It was an additive
+   `LineBasicMaterial` at 0.11; it is now a normal-blend `LineDashedMaterial` (dash 16 / gap 14) at
+   0.09 with `computeLineDistances()` each frame. Dashes cannot read as a filament.
+
+The trail head was also re-measured instead of moved on assumption: the airframe spans z
+-5.7..+9.4 m in the craft frame and the ribbon head sits at +9.0 m, i.e. flush inside the tail, so
+the "detached shard" is the flat strip seen edge-on at chase height, not a positional gap. That
+remains a cosmetic artefact and is listed as such.
+
+Ad-hoc probe for these changes (scratch script, not a suite) — 9/9:
+- keel material renders `#060609`, r-b **-3** (cool/neutral dark); before the cooling the same slot was
+  warm brown. The dark cluster is `#060609` (keel) and `#020101` (hinge slot).
+- ribbon head (`row 0`, transformed through the real matrix chain) lands at craft-local
+  (-0.47, 0.19, 4.09), i.e. **inside** the airframe box (x -9.88..9.88, y -0.85..3.07, z -5.7..9.4,
+  38 meshes): welded, distance 0.00 m, in the aft half.
+- guide: `LineDashedMaterial`, dash 16 / gap 14, opacity 0.055, `lineDistance` attribute present,
+  additive off.

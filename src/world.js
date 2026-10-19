@@ -524,11 +524,13 @@ export class World {
     /* guide arc: a soft line from the craft to the next objective */
     const guideGeo = new THREE.BufferGeometry();
     guideGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(30 * 3), 3));
-    this.guide = new THREE.Line(guideGeo, new THREE.LineBasicMaterial({
-      // cool and faint on purpose: the warm cream vapour is the aircraft's own trail, so the
-      // guide must read as instrumentation and never as a second streamer behind the craft.
+    this.guide = new THREE.Line(guideGeo, new THREE.LineDashedMaterial({
+      // Cool, faint AND dashed on purpose: the warm cream vapour is the aircraft's own trail, so
+      // the guide must read as instrumentation and never as a second streamer. A continuous
+      // additive line still read as a glowing tether in review, so it is now a dashed normal-blend
+      // line: dashes cannot be mistaken for a filament attached to the craft.
       color: new THREE.Color('#bfe0ff'), transparent: true, opacity: 0, depthWrite: false,
-      blending: THREE.AdditiveBlending, fog: true,
+      dashSize: 16, gapSize: 14, fog: true,
     }));
     this.guide.frustumCulled = false;
     this.root.add(this.guide);
@@ -657,7 +659,7 @@ export class World {
     if (!this.guide) return;
     const arr = this.guide.geometry.attributes.position.array;
     const n = arr.length / 3;
-    this.guide.material.opacity = d > 90 ? Math.min(0.11, 0.02 + d / 6000) : 0;
+    this.guide.material.opacity = d > 90 ? Math.min(0.09, 0.02 + d / 6000) : 0;
     if (d <= 90) return;
     const sag = Math.min(90, d * 0.055);
     for (let i = 0; i < n; i++) {
@@ -667,6 +669,7 @@ export class World {
       arr[i * 3 + 2] = from.z + (to.z - from.z) * k;
     }
     this.guide.geometry.attributes.position.needsUpdate = true;
+    this.guide.computeLineDistances();   // dashes follow the arc as it is rewritten each frame
   }
 
   spawnSplash(pos, count = 22, power = 1, color = null) {
